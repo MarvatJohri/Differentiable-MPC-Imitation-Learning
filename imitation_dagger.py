@@ -83,7 +83,7 @@ from diffmpc_controller import DiffMPCController, FeedForwardNetwork, build_mpc_
 
 # Experiment params
 RL_EXPERIMENT_NAME = "spacecraft_ppo_v1_torque_only"
-EXPERIMENT_NAME = "spacecraft_ppo_imitation_dagger_v1_torque_only_test1"
+EXPERIMENT_NAME = "spacecraft_ppo_imitation_dagger_v1_torque_only_experiment1"
 EXPERIMENT_NOTES = "Initial imitation learning on Earth orbit"
 
 # Environment params
@@ -131,17 +131,17 @@ OMEGA_PROGRESS_COEFF = 0.0
 
 
 # Imitation learning hyperparameters
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 3e-4
 LEARNING_RATE_FINAL = 1e-4  
 LEARNING_RATE_SCHEDULE_TYPE = "constant"  # constant, linear, cosine annealing
-BATCH_SIZE = 256
+BATCH_SIZE = 512
 
 BETA_DECAY = 0.95                       # Beta decay for DAgger
 NUM_EPS_STORED = 100
 MAX_BUFFER_SIZE = MAX_EPISODE_LENGTH * NUM_EPS_STORED                # Replay buffer size
-NUM_ITERATIONS = 10
-NUM_TRAJECTORIES = 2
-NUM_GRADIENT_STEPS = 5
+NUM_ITERATIONS = 50
+NUM_TRAJECTORIES = 10
+NUM_GRADIENT_STEPS = 100
 
 # Imitation Learning Architecture
 LAYERS = [256, 256]                  # Hidden layers for the neural network
@@ -157,13 +157,13 @@ HORIZON = 10
 LOG_EVERY = 1
 CHECKPOINT_FREQUENCY = 10
 
-EVAL_FREQUENCY = 2
-NUM_EVAL_EPS = 2
+EVAL_FREQUENCY = 5
+NUM_EVAL_EPS = 10
 
 
 
 # RNG Seed
-SEED = 42
+SEED = 100
 
 
 
@@ -488,7 +488,11 @@ def collect_trajectory(env: VecNormalize,
             # nominal_cntrl = controller_nominal_cntrl
 
         else:
-            executed_action = np.array(controller_action)
+            executed_action = np.array(controller_action) / MAX_TORQUE  # Scale action to [-1, 1] range for env
+            # Check if executed action is within control limits
+            control_limits = jnp.array([[-1, 1]] * 3, dtype=jnp.float64)
+            if not jnp.all((executed_action >= control_limits[:, 0]) & (executed_action <= control_limits[:, 1])):
+                raise ValueError(f"Executed action {executed_action} is out of control limits {control_limits}")
             nominal_traj = controller_nominal_traj
             nominal_cntrl = controller_nominal_cntrl
 
@@ -544,6 +548,8 @@ def loss_fn(controller: DiffMPCController,
                                                  data_batch["goal_state"],
                                                  data_batch["nominal_traj"],
                                                  data_batch["nominal_cntrl"])
+
+    predicted_actions = predicted_actions / MAX_TORQUE  # Scale predicted actions to [-1, 1] range for loss computation
 
     loss = jnp.mean((predicted_actions - data_batch["expert_actions"]) ** 2)      
                           
@@ -681,6 +687,7 @@ def evaluate(controller: DiffMPCController,
             num_episodes: int, 
             key: jax.random.PRNGKey):
 
+    print("Evaluating Imitation Learning Agent")
 
     # Load learned magnetic field models
     model_path = URANUS_MPC_PATH + '/models/'
@@ -706,7 +713,7 @@ def evaluate(controller: DiffMPCController,
     for ep in range(num_episodes):
         ep_start_time = time.time()
 
-        print("Episode Number: ",ep)
+        # print("Episode Number: ",ep)
         key, init_key, traj_key = jax.random.split(key,3)
         # Sample initial state and target state for the episode
         initial_state, target_state = sample_episode_context(init_key)
@@ -761,7 +768,7 @@ def evaluate(controller: DiffMPCController,
 
         ep_end_time = time.time()
 
-        print("Time taken: ",ep_end_time - ep_start_time)
+        # print("Time taken: ",ep_end_time - ep_start_time)
 
     print("Evaluation Done")
     print("Time taken: ",time.time() - start_time)
@@ -1034,6 +1041,6 @@ def dry_test():
 if __name__ == "__main__":
 
 
-    # main()
+    main()
 
-    dry_test()
+    # dry_test()

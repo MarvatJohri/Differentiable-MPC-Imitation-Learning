@@ -690,16 +690,16 @@ class SpacecraftEnv(gym.Env):
         terminated = self._is_terminated()
         truncated = self._is_truncated()
 
-        if self.step_count % 100 == 0 or self.step_count == 1:
-            # q_err = self._get_obs()[:4]
-            # theta_err = 2*np.arccos(np.clip(np.abs(q_err[0]), 0, 1))
-            theta_err = np.degrees(2*np.arccos(np.clip(np.abs(q_err[0]), 0, 1)))
-            # omega_err = self._get_obs()[4:]
-            # b_normalized = self._get_obs()[7:]
-            print(f"Step {self.step_count}: reward={reward:.3f},  theta_err={theta_err:.3f}, omega_err=[{omega_err[0]:.3f}, {omega_err[1]:.3f}, {omega_err[2]:.3f}], [action={action[0]*1e5:.3f}, {action[1]*1e5:.3f}, {action[2]*1e5:.3f}]")
-            # Print if goal reached
-            if self.reached:
-                print(f"Goal reached")
+        # if self.step_count % 100 == 0 or self.step_count == 1:
+        #     # q_err = self._get_obs()[:4]
+        #     # theta_err = 2*np.arccos(np.clip(np.abs(q_err[0]), 0, 1))
+        #     theta_err = np.degrees(2*np.arccos(np.clip(np.abs(q_err[0]), 0, 1)))
+        #     # omega_err = self._get_obs()[4:]
+        #     # b_normalized = self._get_obs()[7:]
+        #     print(f"Step {self.step_count}: reward={reward:.3f},  theta_err={theta_err:.3f}, omega_err=[{omega_err[0]:.3f}, {omega_err[1]:.3f}, {omega_err[2]:.3f}], [action={action[0]*1e5:.3f}, {action[1]*1e5:.3f}, {action[2]*1e5:.3f}]")
+        #     # Print if goal reached
+        #     if self.reached:
+        #         print(f"Goal reached")
 
         info = {
             "initial_state": self.episode_initial_context["initial_state"],

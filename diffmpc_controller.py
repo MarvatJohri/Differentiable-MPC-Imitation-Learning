@@ -246,8 +246,8 @@ class DiffMPCController(eqx.Module):
         theta = self.network(obs)
         Q, R = network_output_to_QR(theta, self.nx - 1, self.nu, self.network.decomposition_type, self.output_horizon)
         # Make prints for debugging 
-        jax.debug.print("Q : {}", Q)
-        jax.debug.print("R : {}", R)
+        # jax.debug.print("Q : {}", Q)
+        # jax.debug.print("R : {}", R)
 
         # Need to pass in initial error b/w state and nom_traj, call this delta_x
         # Also need to pass "error" b/w goal and nominal trajectory, call this delta_x_g

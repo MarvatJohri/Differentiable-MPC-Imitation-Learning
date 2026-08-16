@@ -275,7 +275,7 @@ def generate_trajectory(initial_state: jax.Array,
     key, subkey = jax.random.split(key)
 
     init_nom_traj = jnp.tile(initial_state,(controller.horizon+1,1))
-    init_nom_control = 0.001*jax.random.normal(subkey, shape=((controller.horizon, controller.nu)))
+    init_nom_control = jnp.zeros(shape=(init_nom_traj.shape[0]-1, controller.nu))
 
     init_carry = (initial_state, key, 0, init_nom_traj, init_nom_control)
 

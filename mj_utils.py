@@ -11,6 +11,8 @@ from typing import Callable, Tuple, List, Dict
 from quaternion_functions import q_left, q_conj, get_rotation, q_to_mrp, skew, quaternion_projection, quaternion_jacobian
 from functools import partial
 
+MAX_TORQUE = 5e-5
+
 @partial(jax.jit,static_argnums=(1, 2, 3, 4, 5, 6, 7, 8, 9))
 def network_output_to_QR(theta, nx, nu, decomposition_type='diagonal', 
                 horizon=10, qmin=1e-1, rmin=1e-1, qmax=1e5, rmax=1e5, 
@@ -116,6 +118,8 @@ def network_output_to_QR(theta, nx, nu, decomposition_type='diagonal',
 
             Q = jax.vmap(lambda L: L @ L.T)(L)
             R = jax.vmap(lambda M: M @ M.T)(M)
+
+    R = R / (MAX_TORQUE ** 2)  # Scale R by max torque squared
 
     return Q, R
 
