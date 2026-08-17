@@ -20,7 +20,7 @@ from functools import partial
 
 # from DiffMPC_controller import DiffMPCController
 
-
+MAX_ANGULAR_VELOCITY = 500.0 # Set to prevent nans and stuff blowing up, but should be set to a reasonable value based on the system's physical limits
 
 
 dynamics_params = {
@@ -38,6 +38,7 @@ def get_state_error(x, xg):
 
     # fix sign ambiguity
     q_err = jnp.where(q_err[0] < 0, -q_err, q_err)
+    q_err = q_err / jnp.linalg.norm(q_err)  # Normalize 
 
     omega = x[4:7]
     omegag = xg[4:7]
@@ -139,20 +140,21 @@ def rk4_step(state, control, t, dt, key, noise_std):
     # key1, key = jax.random.split(key)
     # noise = jax.random.normal(key, shape=state.shape) * noise_std * jnp.sqrt(dt)
     x_next = state + dx #+ noise
+    x_next = quaternion_projection(x_next)
 
-    omega = x_next[4:7]
-    max_omega = 500.0
-    omega_norm = jnp.linalg.norm(omega)
-    omega_clamped = jnp.where(omega_norm > max_omega, 
-                               omega * max_omega / omega_norm, 
-                               omega)
+    # omega = x_next[4:7]
+    # max_omega = MAX_ANGULAR_VELOCITY
+    # omega_norm = jnp.linalg.norm(omega)
+    # omega_clamped = jnp.where(omega_norm > max_omega, 
+    #                            omega * max_omega / omega_norm, 
+    #                            omega)
 
-    x_next = x_next.at[4:7].set(omega_clamped)
+    # x_next = x_next.at[4:7].set(omega_clamped)
 
     return x_next
 
 
-def sample_episode_context(key):
+def sample_episode_context(key, batch_size=1):
 
     init_key, target_key = jax.random.split(key, 2)
 
@@ -167,13 +169,16 @@ def sample_episode_context(key):
                 {'shape': (3,), 'dist': 'uniform', 'min': 0.0, 'max': 0.0} # angular velocity
     ]
 
-    target_state = sample_initial_states(batch_size=1, key=target_key, state_specs=target_state_specs)[0]
-    initial_state = sample_initial_states(batch_size=1, key=init_key, state_specs=init_state_specs)[0]
+    target_states = sample_initial_states(batch_size=batch_size, key=target_key, state_specs=target_state_specs)
+    initial_states = sample_initial_states(batch_size=batch_size, key=init_key, state_specs=init_state_specs)
+
+    if batch_size == 1:
+        initial_states = initial_states[0]
+        target_states = target_states[0]
 
 
 
-    return initial_state, target_state
-
+    return initial_states, target_states
 
 
 @jax.jit
@@ -258,6 +263,8 @@ def generate_trajectory(initial_state: jax.Array,
             return action, nominal_traj, nominal_cntrl
 
         # Find state error to use as obs for controller
+        print("target state: ", target_state)
+        print("current state: ", state)
         state_error = get_state_error(state, target_state)
         action, nominal_traj, nominal_cntrl = jax.lax.cond(
             i % replan_freq == 0,

@@ -70,7 +70,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecNormalize
 from simulation_env_simpler import SpacecraftEnv
 from replay_buffer import ReplayBuffer, init_buffer, add_trajectories_to_buffer, sample_from_buffer, can_sample_buffer
 from mj_utils import network_output_to_QR
-from propagate_functions import sample_episode_context, generate_trajectory
+from propagate_functions import sample_episode_context, generate_trajectory, get_state_error, rk4_step
 from diffmpc_controller import DiffMPCController, FeedForwardNetwork, build_mpc_solver
 
 
@@ -127,21 +127,23 @@ THETA_PROGRESS_COEFF = 0.0
 OMEGA_PROGRESS_COEFF = 0.0
 
 
-
+# MPC Parameters
+REPLAN_FREQ = 1
+NOISE_STD = 1e-6
 
 
 # Imitation learning hyperparameters
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 1e-4
 LEARNING_RATE_FINAL = 1e-4  
 LEARNING_RATE_SCHEDULE_TYPE = "constant"  # constant, linear, cosine annealing
-BATCH_SIZE = 512
+BATCH_SIZE = 256
 
-BETA_DECAY = 0.95                       # Beta decay for DAgger
+BETA_DECAY = 0.99                       # Beta decay for DAgger
 NUM_EPS_STORED = 100
 MAX_BUFFER_SIZE = MAX_EPISODE_LENGTH * NUM_EPS_STORED                # Replay buffer size
 NUM_ITERATIONS = 50
 NUM_TRAJECTORIES = 10
-NUM_GRADIENT_STEPS = 100
+NUM_GRADIENT_STEPS = 50
 
 # Imitation Learning Architecture
 LAYERS = [256, 256]                  # Hidden layers for the neural network
@@ -157,7 +159,7 @@ HORIZON = 10
 LOG_EVERY = 1
 CHECKPOINT_FREQUENCY = 10
 
-EVAL_FREQUENCY = 5
+EVAL_FREQUENCY = 10
 NUM_EVAL_EPS = 10
 
 
@@ -415,117 +417,252 @@ def save_il_model(controller: DiffMPCController,
 
 
 
-def collect_trajectory(env: VecNormalize,
-                       expert_policy: PPO,
+# def collect_trajectory(env: VecNormalize,
+#                        expert_policy: PPO,
+#                        controller: DiffMPCController,
+#                        max_episode_length: int,
+#                        beta:float,
+#                        key: jax.random.PRNGKey) -> Tuple[Dict[str, jnp.ndarray], jax.random.PRNGKey]:
+
+
+
+#     raw_env = env.envs[0].unwrapped
+
+#     key, subkey = jax.random.split(key)
+#     seed = int(jax.random.randint(subkey, shape=(), minval=0, maxval=2**32 - 1))
+#     raw_obs, info = raw_env.reset(seed=seed)
+
+#     initial_state = info["initial_state"]
+#     goal_state = info["goal_state"]
+
+#     key, subkey = jax.random.split(key)
+#     nominal_traj = jnp.tile(initial_state,(controller.horizon+1,1))
+#     nominal_cntrl = 0.001*jax.random.normal(subkey, shape=((controller.horizon, controller.nu)))
+
+#     obs_list = []
+#     expert_action_list = []
+#     nominal_traj_list = []
+#     nominal_cntrl_list = []
+
+#     for _ in range(max_episode_length):
+
+
+#         normalized_obs = env.normalize_obs(raw_obs)
+#         expert_action, _ = expert_policy.predict(normalized_obs, deterministic=True)
+
+#         controller_action, controller_nominal_traj, controller_nominal_cntrl = controller(jnp.array(raw_obs), 
+#                                                                                           jnp.array(goal_state), 
+#                                                                                           nominal_traj, 
+#                                                                                           nominal_cntrl)
+
+#         obs_list.append(jnp.array(raw_obs))
+#         expert_action_list.append(jnp.array(expert_action))
+#         nominal_traj_list.append(nominal_traj)
+#         nominal_cntrl_list.append(nominal_cntrl)
+        
+
+#         key, subkey = jax.random.split(key)
+#         if float(jax.random.uniform(subkey)) < beta:
+#             executed_action = expert_action
+
+#             # Three options when it comes to updating nominals 
+#             # for DAgger as I see it
+#             # Option 1: Let MPC make a plan and store that as part of augmented dataset
+#             # Option 2: Let expert make a plan and store that as part of augmented dataset
+#             # Option 3: Don't make a plan at each timestep and use previous MPC calls for replanning
+
+#             # Looking at Patrick's code, he doesn't replan unless he is required to
+#             # That is most similar to option 3
+
+#             # That said, Patrick's code assumes that the controller
+#             # policy is actually being run
+#             # that is not true in our case
+            
+#             # For option 1, below use controller_nominal_traj and controller_nominal_cntrl
+#             # For option 2 we need to call expert policy to make a plan
+
+#             # Option 3
+#             nominal_traj = jnp.concatenate((nominal_traj[1:],jnp.expand_dims(nominal_traj[-1],axis=0)),axis=0)
+#             nominal_cntrl = jnp.concatenate((nominal_cntrl[1:],jnp.expand_dims(nominal_cntrl[-1],axis=0)),axis=0)
+
+#             # # Option 2
+#             # nominal_traj = controller_nominal_traj
+#             # nominal_cntrl = controller_nominal_cntrl
+
+#         else:
+#             executed_action = np.array(controller_action) / MAX_TORQUE  # Scale action to [-1, 1] range for env
+#             # # Check if executed action is within control limits
+#             # control_limits = jnp.array([[-1, 1]] * 3, dtype=jnp.float64)
+#             # if not jnp.all((executed_action >= control_limits[:, 0]) & (executed_action <= control_limits[:, 1])):
+#             #     raise ValueError(f"Executed action {executed_action} is out of control limits {control_limits}")
+#             # executed_action = np.clip(np.array(controller_action) / MAX_TORQUE, -1.0, 1.0)
+#             nominal_traj = controller_nominal_traj
+#             nominal_cntrl = controller_nominal_cntrl
+
+            
+
+        
+
+#         # Step env
+#         raw_obs, reward, done, truncated, info = raw_env.step(executed_action)
+
+#     trajectory = {
+#         "obs": jnp.array(obs_list),
+#         "goal_state": jnp.array(goal_state),
+#         "expert_actions": jnp.array(expert_action_list),
+#         "nominal_traj": jnp.array(nominal_traj_list),
+#         "nominal_cntrl": jnp.array(nominal_cntrl_list),
+#     }
+
+#     return trajectory, key
+
+
+
+def collect_trajectory(initial_state: jnp.ndarray,
+                       target_state: jnp.ndarray,
+                       key: jax.random.PRNGKey,
+                       dt: float,
+                       expert_policy: Callable,
                        controller: DiffMPCController,
                        max_episode_length: int,
-                       beta:float,
-                       key: jax.random.PRNGKey) -> Tuple[Dict[str, jnp.ndarray], jax.random.PRNGKey]:
+                       beta: float,
+                       replan_freq: int,
+                       noise_std: float,) -> Tuple[Dict[str, jnp.ndarray], jax.random.PRNGKey]:
 
 
+    initial_state = jnp.array(initial_state, dtype=jnp.float64)
+    target_state = jnp.array(target_state, dtype=jnp.float64)
 
-    raw_env = env.envs[0].unwrapped
+    def scan_step(carry, _):
 
-    key, subkey = jax.random.split(key)
-    seed = int(jax.random.randint(subkey, shape=(), minval=0, maxval=2**32 - 1))
-    raw_obs, info = raw_env.reset(seed=seed)
+        state, key, i, nominal_traj, nominal_cntrl = carry
+        t_current = i * dt
+        key, rk4_key, dagger_key = jax.random.split(key, 3)
 
-    initial_state = info["initial_state"]
-    goal_state = info["goal_state"]
+        state_error = get_state_error(state, target_state)
 
-    key, subkey = jax.random.split(key)
-    nominal_traj = jnp.tile(initial_state,(controller.horizon+1,1))
-    nominal_cntrl = 0.001*jax.random.normal(subkey, shape=((controller.horizon, controller.nu)))
-
-    obs_list = []
-    expert_action_list = []
-    nominal_traj_list = []
-    nominal_cntrl_list = []
-
-    for _ in range(max_episode_length):
-
-
-        normalized_obs = env.normalize_obs(raw_obs)
-        expert_action, _ = expert_policy.predict(normalized_obs, deterministic=True)
-
-        controller_action, controller_nominal_traj, controller_nominal_cntrl = controller(jnp.array(raw_obs), 
-                                                                                          jnp.array(goal_state), 
-                                                                                          nominal_traj, 
-                                                                                          nominal_cntrl)
-
-        obs_list.append(jnp.array(raw_obs))
-        expert_action_list.append(jnp.array(expert_action))
-        nominal_traj_list.append(nominal_traj)
-        nominal_cntrl_list.append(nominal_cntrl)
-        
-
-        key, subkey = jax.random.split(key)
-        if float(jax.random.uniform(subkey)) < beta:
-            executed_action = expert_action
-
-            # Three options when it comes to updating nominals 
-            # for DAgger as I see it
-            # Option 1: Let MPC make a plan and store that as part of augmented dataset
-            # Option 2: Let expert make a plan and store that as part of augmented dataset
-            # Option 3: Don't make a plan at each timestep and use previous MPC calls for replanning
-
-            # Looking at Patrick's code, he doesn't replan unless he is required to
-            # That is most similar to option 3
-
-            # That said, Patrick's code assumes that the controller
-            # policy is actually being run
-            # that is not true in our case
+        def controller_wrapper(operand):
+            return controller(*operand)
             
-            # For option 1, below use controller_nominal_traj and controller_nominal_cntrl
-            # For option 2 we need to call expert policy to make a plan
-
-            # Option 3
+        def no_update(operand):
+            _, __, nominal_traj, nominal_cntrl = operand
+            # Shift nominal trajectory and nominal cntrl
             nominal_traj = jnp.concatenate((nominal_traj[1:],jnp.expand_dims(nominal_traj[-1],axis=0)),axis=0)
             nominal_cntrl = jnp.concatenate((nominal_cntrl[1:],jnp.expand_dims(nominal_cntrl[-1],axis=0)),axis=0)
+            action = nominal_cntrl[0]
+            return action, nominal_traj, nominal_cntrl
 
-            # # Option 2
-            # nominal_traj = controller_nominal_traj
-            # nominal_cntrl = controller_nominal_cntrl
+        # Get controller action accounting for replan frequency
+        controller_action, controller_nominal_traj, controller_nominal_cntrl = jax.lax.cond(
+            i % replan_freq == 0,
+            controller_wrapper,
+            no_update,
+            operand=(state_error, target_state, nominal_traj, nominal_cntrl)
+        )
 
-        else:
-            executed_action = np.array(controller_action) / MAX_TORQUE  # Scale action to [-1, 1] range for env
-            # Check if executed action is within control limits
-            control_limits = jnp.array([[-1, 1]] * 3, dtype=jnp.float64)
-            if not jnp.all((executed_action >= control_limits[:, 0]) & (executed_action <= control_limits[:, 1])):
-                raise ValueError(f"Executed action {executed_action} is out of control limits {control_limits}")
-            nominal_traj = controller_nominal_traj
-            nominal_cntrl = controller_nominal_cntrl
+        controller_action = controller_action / MAX_TORQUE  # Scale action to [-1, 1] range for loss computation
+        # controller and expert action are now in [-1, 1] range, maintained for use in loss function
+        expert_action = expert_policy(state_error)
 
+        use_expert = jax.random.uniform(dagger_key) < beta
+        executed_action = jnp.where(use_expert, expert_action, controller_action) * MAX_TORQUE  # Scale back to original range for rk4 step
+
+        # Shift the nominal trajectory and control
+        shifted_traj  = jnp.concatenate([nominal_traj[1:],  nominal_traj[-1:]],  axis=0)
+        shifted_cntrl = jnp.concatenate([nominal_cntrl[1:], nominal_cntrl[-1:]], axis=0)
+        new_nominal_traj  = jnp.where(use_expert, shifted_traj,  controller_nominal_traj)
+        new_nominal_cntrl = jnp.where(use_expert, shifted_cntrl, controller_nominal_cntrl)
+
+        # Step dynamics using RK4
+        new_state = rk4_step(state, executed_action, t_current, dt, rk4_key, noise_std)
+
+        new_carry = (new_state, key, i + 1, new_nominal_traj, new_nominal_cntrl)
+        outputs = (state_error, expert_action, nominal_traj, nominal_cntrl)
+
+        return new_carry, outputs
         
 
-        # Step env
-        raw_obs, reward, done, truncated, info = raw_env.step(executed_action)
-
-    trajectory = {
-        "obs": jnp.array(obs_list),
-        "goal_state": jnp.array(goal_state),
-        "expert_actions": jnp.array(expert_action_list),
-        "nominal_traj": jnp.array(nominal_traj_list),
-        "nominal_cntrl": jnp.array(nominal_cntrl_list),
-    }
-
-    return trajectory, key
 
 
-def collect_trajectories(env: VecNormalize,
-                        expert_policy: Callable,
-                        controller: DiffMPCController,
-                        num_trajectories: int,
-                        max_episode_length: int,
-                        beta: float,
-                        key: jax.random.PRNGKey) -> Tuple[List[Dict[str, jnp.ndarray]], jax.random.PRNGKey]:
+    # Def init stuff
+    # key, subkey = jax.random.split(key)
 
-    trajectories = []
-    for _ in range(num_trajectories):
-        trajectory, key = collect_trajectory(env, expert_policy, controller, max_episode_length, beta, key)
-        trajectories.append(trajectory)
+    init_nom_traj = jnp.tile(initial_state,(controller.horizon+1,1))
+    init_nom_control = jnp.zeros(shape=(init_nom_traj.shape[0]-1, controller.nu))
 
-    return trajectories, key
+    init_carry = (initial_state, key, 0, init_nom_traj, init_nom_control)
+
+    final_carry, outputs = jax.lax.scan(scan_step, init_carry, None, length=max_episode_length)
+
+    final_state, key, final_step, final_nom_traj, final_nom_cntrl = final_carry
+
+    observations, expert_actions, nominal_trajs, nominal_cntrls = outputs
+
+    return {
+        "obs": observations,
+        # "goal_state": jnp.broadcast_to(target_state, (max_episode_length, target_state.shape[0])),
+        "goal_state": target_state,
+        "expert_actions": expert_actions,
+        "nominal_traj": nominal_trajs,
+        "nominal_cntrl": nominal_cntrls,
+    }, key  
+
+@eqx.filter_jit
+def collect_trajectories(expert_policy: Callable,
+                         controller: DiffMPCController,
+                         dt: float,
+                         max_episode_length: int,
+                         beta: float,
+                         key: jax.random.PRNGKey,
+                         replan_freq: int,
+                         noise_std: float,
+                         num_trajectories: int) -> Tuple[List[Dict[str, jnp.ndarray]], jax.random.PRNGKey]:
+
+
+    # Sample initial and target states for all trajectories
+    key, subkey = jax.random.split(key)
+    initial_states, target_states = sample_episode_context(subkey, batch_size=num_trajectories)
+
+    keys = jax.random.split(key, num_trajectories + 1)  # Split keys for each trajectory
+    key = keys[0]  # Update key 
+    keys = keys[1:num_trajectories + 1]  # Use num_trajectories keys for trajectory collection
+    # Get trajs using vmap
+    trajs, _ = jax.vmap(collect_trajectory, in_axes=(0, 0, 0, None, None, None, None, None, None, None))(
+        initial_states,
+        target_states,
+        keys,
+        dt,
+        expert_policy,
+        controller,
+        max_episode_length,
+        beta,
+        replan_freq,
+        noise_std
+    )
+
+    return trajs, key  # Return trajectories and updated key
+
+
+
+
+
+
+
+
+# def collect_trajectories(env: VecNormalize,
+#                         expert_policy: Callable,
+#                         controller: DiffMPCController,
+#                         num_trajectories: int,
+#                         max_episode_length: int,
+#                         beta: float,
+#                         key: jax.random.PRNGKey) -> Tuple[List[Dict[str, jnp.ndarray]], jax.random.PRNGKey]:
+
+#     trajectories = []
+#     for _ in range(num_trajectories):
+#         trajectory, key = collect_trajectory(env, expert_policy, controller, max_episode_length, beta, key)
+#         trajectories.append(trajectory)
+
+#     return trajectories, key
 
 
 
@@ -591,6 +728,12 @@ def train_loop(controller: DiffMPCController,
 
         # updates, opt_state = optimizer.update(grad, opt_state, controller.network)
 
+        # Compute gradient norm for debugging
+        # grad_leaves = jax.tree_util.tree_leaves(eqx.filter(grad, eqx.is_array))
+        # grad_norm = jnp.sqrt(sum(jnp.sum(g**2) for g in grad_leaves))
+        
+        # jax.debug.print("Loss: {}, Grad norm: {}", loss, grad_norm)  # Uncomment to debug
+
         network_grad = grad.network
 
         updates, opt_state = optimizer.update(network_grad, opt_state, controller.network)
@@ -636,9 +779,9 @@ def train_loop(controller: DiffMPCController,
 
 
 
-def train_iteration(env: VecNormalize,
-                    controller: DiffMPCController,
+def train_iteration(controller: DiffMPCController,
                     expert_policy: PPO, 
+                    dt: float,
                     replay_buffer: ReplayBuffer,
                     beta: float,
                     optimizer: optax.GradientTransformation,
@@ -647,12 +790,24 @@ def train_iteration(env: VecNormalize,
                     num_trajectories: int,
                     max_episode_length: int,
                     num_gradient_steps: int,
+                    replan_freq: int,
+                    noise_std: float,
                     batch_size: int,
                     beta_decay: float):
 
 
     # Collect trajectories
-    trajectories, key = collect_trajectories(env, expert_policy, controller, num_trajectories, max_episode_length, beta, key)
+    # trajectories, key = collect_trajectories(env, expert_policy, controller, num_trajectories, max_episode_length, beta, key)
+
+    trajectories, key = collect_trajectories(expert_policy=expert_policy,
+                                             controller=controller,
+                                             dt=dt,
+                                             max_episode_length=max_episode_length,
+                                             beta=beta,
+                                             key=key,
+                                             replan_freq=replan_freq,
+                                             noise_std=noise_std,
+                                             num_trajectories=num_trajectories)
 
     # Debug: Check trajectory shapes before adding
     # for i, traj in enumerate(trajectories):
@@ -709,6 +864,10 @@ def evaluate(controller: DiffMPCController,
     step_actions = jnp.zeros((num_episodes, max_steps, 3))  # Store actions for each episode
 
     start_time = time.time()
+
+    # TODO: Change evaluation to use collect_trajectories function for efficiency
+    # Will also need to make my own plotting functions to handle this then
+    # Which I really don't want to do right now
 
     for ep in range(num_episodes):
         ep_start_time = time.time()
@@ -798,9 +957,9 @@ def evaluate(controller: DiffMPCController,
 
 
 
-def learn(env: VecNormalize, 
-          controller: DiffMPCController, 
+def learn(controller: DiffMPCController, 
           expert_policy: Callable,
+          dt: float,
           replay_buffer: ReplayBuffer,
           optimizer: optax.GradientTransformation,
           opt_state: optax.OptState,
@@ -817,6 +976,9 @@ def learn(env: VecNormalize,
           logger,
           evaluate_freq: int,
           num_eval_eps: int,
+          replan_freq: int = 1,
+          noise_std: float = 1e-6,
+          eval_after: int = 0,
           resume: bool = False):
 
 
@@ -839,21 +1001,23 @@ def learn(env: VecNormalize,
 
     for itr in range(itrs_done, num_iterations):
 
-        # itr_start_time = time.time()
+        itr_start_time = time.time()
         # Do a train iteration
-        controller, replay_buffer, opt_state, mean_loss, beta, key = train_iteration(env,
-                                                                                       controller,
-                                                                                       expert_policy,
-                                                                                       replay_buffer,
-                                                                                       beta,
-                                                                                       optimizer,
-                                                                                       opt_state,
-                                                                                       key,
-                                                                                       num_trajectories,
-                                                                                       max_episode_length,
-                                                                                       num_gradient_steps,
-                                                                                       batch_size,
-                                                                                       beta_decay)
+        controller, replay_buffer, opt_state, mean_loss, beta, key = train_iteration(controller,
+                                                                                     expert_policy,
+                                                                                     dt,
+                                                                                     replay_buffer,
+                                                                                     beta,
+                                                                                     optimizer,
+                                                                                     opt_state,
+                                                                                     key,
+                                                                                     num_trajectories,
+                                                                                     max_episode_length,
+                                                                                     num_gradient_steps,
+                                                                                     replan_freq,
+                                                                                     noise_std,
+                                                                                     batch_size,
+                                                                                     beta_decay)
 
 
         itr_end_time = time.time()
@@ -864,7 +1028,7 @@ def learn(env: VecNormalize,
         if itr % log_frequency == 0:
 
             # print(f"Iteration {itr}, Mean loss: {mean_loss}, time: {itr_end_time - start_time}")
-            logger.info(f"Iteration {itr}, Mean loss: {mean_loss}, beta: {beta}, time: {itr_end_time - start_time}")
+            logger.info(f"Iteration {itr}, Mean loss: {mean_loss}, beta: {beta}, itr time take: {itr_end_time - itr_start_time}")
 
         # save checkpoint
 
@@ -873,18 +1037,50 @@ def learn(env: VecNormalize,
             save_il_model(controller, replay_buffer, opt_state, beta, itr, key, checkpoint_path)
 
         # Evaluate
-        if itr % evaluate_freq == 0:
+        if itr % evaluate_freq == 0 and itr > eval_after:
             key, subkey = jax.random.split(key)
             evaluate(controller, max_episode_length, num_eval_eps, subkey)
+
+    # final print
+    logger.info(f"itr {itr}, Mean loss: {mean_loss}, beta: {beta}, total time taken: {time.time() - start_time}")
+
+    # Save final model
+    logger.info("Training done, saving final model")
 
     return controller, replay_buffer, opt_state, beta, key
 
 
 
+def get_expert_policy(expert_policy: PPO, vec_env: VecNormalize):
 
 
+    # Extract the expert policy's actor module and parameters
+    actor_module = expert_policy.policy.actor
+    actor_params = expert_policy.policy.actor_state.params
+
+    # Extract the vector normalization statistics
+    obs_mean = jnp.array(vec_env.obs_rms.mean, dtype=jnp.float32)
+    obs_var = jnp.array(vec_env.obs_rms.var, dtype=jnp.float32)
+    obs_count = vec_env.obs_rms.count
+    obs_eps = vec_env.epsilon
+    obs_clip = vec_env.clip_obs
+
+    def expert_policy_fn(obs: jnp.ndarray) -> jnp.ndarray:
+        # Cast down to float32 for the actor module
+        obs = obs.astype(jnp.float32)
+
+        # Normalize the observation
+        normalized_obs = (obs - obs_mean) / jnp.sqrt(obs_var + obs_eps)
+        normalized_obs = jnp.clip(normalized_obs, -obs_clip, obs_clip)
+
+        # Pass through the actor module to get the action
+        dist = actor_module.apply(actor_params, normalized_obs[None, :])
+        action = dist.mode()[0]  # Get the mode of the distribution and remove the batch dimension
+        action = jnp.clip(action, -1.0, 1.0)  # Ensure action is within [-1, 1]
+        return action.astype(jnp.float64)  # Cast back to float64 for consistency
 
 
+    return expert_policy_fn
 
 
 
@@ -940,7 +1136,14 @@ def main():
 
     
     # Initialize optimizer
-    optimizer = optax.adam(learning_rate=LEARNING_RATE)
+    # optimizer = optax.adam(learning_rate=LEARNING_RATE)
+
+    # Initialize optimizer + gradient clipping 
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),  # Clip gradients to prevent exploding
+        optax.adam(learning_rate=LEARNING_RATE)
+    )
+
     opt_state = optimizer.init(eqx.filter(controller.network,eqx.is_array))
 
 
@@ -960,15 +1163,36 @@ def main():
     # Setup logger stuff
     logger = setup_logging(SAVE_PATH,LOG_FILENAME)
 
+
+
+    # Extract flax expert policy from stable-baselines3 PPO model
+    # actor_module = expert_policy.policy.actor
+    # actor_params = expert_policy.policy.actor_state.params
+
+
+    # # Extract vector normalization statistics from the VecNormalize wrapper
+    # obs_mean = jnp.array(vec_env.obs_rms.mean, dtype=jnp.float64)
+    # obs_var = jnp.array(vec_env.obs_rms.var, dtype=jnp.float64)
+    # obs_count = vec_env.obs_rms.count
+    # obs_eps = vec_env.epsilon
+    # obs_clip = vec_env.clip_obs
+
+
+    expert_policy = get_expert_policy(expert_policy, vec_env)
+
+
+
+
+
     # Learn stuff
     # key, subkey = jax.random.split(key)
-    controller, replay_buffer, opt_state, beta, key = learn(vec_env,
-                                                            controller,
+    controller, replay_buffer, opt_state, beta, key = learn(controller,
                                                             expert_policy,
-                                                            replay_buffer,
-                                                            optimizer,
-                                                            opt_state,
-                                                            key,
+                                                            dt=DT,
+                                                            replay_buffer=replay_buffer,
+                                                            optimizer=optimizer,
+                                                            opt_state=opt_state,
+                                                            key=key,
                                                             num_iterations=NUM_ITERATIONS,
                                                             num_trajectories=NUM_TRAJECTORIES,
                                                             max_episode_length=MAX_EPISODE_LENGTH,
@@ -979,9 +1203,11 @@ def main():
                                                             checkpoint_frequency=CHECKPOINT_FREQUENCY,
                                                             checkpoint_path=CHECKPOINT_PATH,
                                                             logger=logger,
-                                                            resume=RESUME_TRAINING,
                                                             evaluate_freq=EVAL_FREQUENCY,
-                                                            num_eval_eps=NUM_EVAL_EPS)
+                                                            num_eval_eps=NUM_EVAL_EPS,
+                                                            replan_freq=REPLAN_FREQ,
+                                                            noise_std=NOISE_STD,
+                                                            resume=RESUME_TRAINING)
 
 
 

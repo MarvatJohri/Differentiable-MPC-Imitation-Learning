@@ -67,27 +67,56 @@ def add_transitions_to_buffer(buffer: ReplayBuffer,
     return new_buffer
 
 
-def add_trajectories_to_buffer(buffer: ReplayBuffer, 
-                               trajectories: List[Dict[str, jnp.ndarray]],
-                               ) -> ReplayBuffer:
+# def add_trajectories_to_buffer(buffer: ReplayBuffer, 
+#                                trajectories: List[Dict[str, jnp.ndarray]],
+#                                ) -> ReplayBuffer:
 
-    obs = jnp.concatenate([traj["obs"] for traj in trajectories], axis=0)
-    expert_actions = jnp.concatenate([traj["expert_actions"] for traj in trajectories], axis=0)
-    nominal_traj = jnp.concatenate([traj["nominal_traj"] for traj in trajectories], axis=0)
-    nominal_cntrl = jnp.concatenate([traj["nominal_cntrl"] for traj in trajectories], axis=0)
+#     obs = jnp.concatenate([traj["obs"] for traj in trajectories], axis=0)
+#     expert_actions = jnp.concatenate([traj["expert_actions"] for traj in trajectories], axis=0)
+#     nominal_traj = jnp.concatenate([traj["nominal_traj"] for traj in trajectories], axis=0)
+#     nominal_cntrl = jnp.concatenate([traj["nominal_cntrl"] for traj in trajectories], axis=0)
 
-    goal_state = []
-    for traj in trajectories:
-        goal = traj["goal_state"]
-        if goal.ndim == 1:
+#     goal_state = []
+#     for traj in trajectories:
+#         goal = traj["goal_state"]
+#         if goal.ndim == 1:
 
-            T = traj["obs"].shape[0]
-            goal = jnp.broadcast_to(goal, (T, goal.shape[0]))
-        goal_state.append(goal)
-    goal_state = jnp.concatenate(goal_state, axis=0)
+#             T = traj["obs"].shape[0]
+#             goal = jnp.broadcast_to(goal, (T, goal.shape[0]))
+#         goal_state.append(goal)
+#     goal_state = jnp.concatenate(goal_state, axis=0)
 
 
-    return add_transitions_to_buffer(buffer, obs, goal_state, expert_actions, nominal_traj, nominal_cntrl)
+#     return add_transitions_to_buffer(buffer, obs, goal_state, expert_actions, nominal_traj, nominal_cntrl)
+
+
+
+
+
+def add_trajectories_to_buffer(buffer: ReplayBuffer,
+                               trajectories: Dict[str, jnp.ndarray]) -> ReplayBuffer:
+
+
+    """
+    Handles the case where trajectories are vmapped and provided 
+    as a dict of trajectories rather than a list of dicts
+    """
+
+    num_trajs, T = trajectories["obs"].shape[0], trajectories["obs"].shape[1]
+    total_transitions = num_trajs * T
+
+    obs = trajectories["obs"].reshape(total_transitions, -1)
+    expert_actions = trajectories["expert_actions"].reshape(total_transitions, -1)
+    nominal_traj = trajectories["nominal_traj"].reshape(total_transitions, *trajectories["nominal_traj"].shape[2:])
+    nominal_cntrl = trajectories["nominal_cntrl"].reshape(total_transitions, *trajectories["nominal_cntrl"].shape[2:])
+
+    # Broadcast goal_state: (num_traj, 7) → (num_traj, T, 7) → (total, 7)
+    goal = trajectories["goal_state"]  # (num_traj, 7)
+    goal = jnp.repeat(goal[:, None, :], T, axis=1)  # (num_traj, T, 7)
+    goal_states = goal.reshape(total_transitions, -1)  # (total, 7)
+
+
+    return add_transitions_to_buffer(buffer, obs, goal_states, expert_actions, nominal_traj, nominal_cntrl)
 
 
 

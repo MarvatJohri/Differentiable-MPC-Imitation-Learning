@@ -221,8 +221,8 @@ class DiffMPCController(eqx.Module):
                  obs, x_goal, x_nominal, u_nominal):
 
 
-        has_nan_input = (jnp.isnan(obs).any() | jnp.isnan(x_goal).any() | 
-                     jnp.isnan(x_nominal).any() | jnp.isnan(u_nominal).any())
+        # has_nan_input = (jnp.isnan(obs).any() | jnp.isnan(x_goal).any() | 
+        #              jnp.isnan(x_nominal).any() | jnp.isnan(u_nominal).any())
 
         # def print_input_debug():
         #     jax.debug.print("=== NaN IN INPUTS ===")
