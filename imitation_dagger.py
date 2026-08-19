@@ -86,12 +86,16 @@ RL_EXPERIMENT_NAME = "spacecraft_ppo_v1_torque_only"
 EXPERIMENT_NAME = "spacecraft_ppo_imitation_dagger_v1_torque_only_experiment1"
 EXPERIMENT_NOTES = "Initial imitation learning on Earth orbit"
 
+DYNAMICS_PARAMETERS = {
+    "mass": 0.75,
+    "inertia": np.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
+}
+DYNAMICS_PARAMETERS["inertia_inv"] = np.linalg.inv(DYNAMICS_PARAMETERS["inertia"]) 
+
 # Environment params
-PLANET = Earth                 # "earth" or "uranus"
 DT = 0.1                         # Simulation timestep
-N_ORBIT = 5000                   # Orbit trajectory length
 DYN_NOISE_STD = 1e-6             # Dynamics noise
-MAX_EPISODE_LENGTH = 1500         # Max episode length
+MAX_EPISODE_STEPS = 1500         # Max episode length
 
 
 # State/action limits
@@ -101,31 +105,14 @@ CONTROL_LIMIT_SCALE = 1        # Scales [-1, 1] control limits
 MAX_TORQUE = 5e-5
 CONTROL_LIMITS = jnp.array([[-MAX_TORQUE, MAX_TORQUE]] * 3, dtype=jnp.float64) # [torque]
 
-# Mag field stuff
-NORMALIZE_MAG = True                # Whether to normalize magnetic field vector in observations
-MAG_FIELD_HORIZON = 0              # Number of future magnetic field vectors to include in observation
-MAG_FIELD_SCALE = 1e-5
-CONST_MAG_FIELD = False              # Whether to use a constant magnetic field throughout the episode
-
 
 # Reward shaping
 THETA_THRESHOLD = np.deg2rad(15.0)  # Convert to radians
 OMEGA_THRESHOLD = np.deg2rad(5.0)                 # Angular velocity tolerance (rad/s)
-THETA_PROXIMITY_TOL_DEG = 50.0        # Proximity tolerance for reward shaping (degrees)
-THETA_PROXIMITY_TOL = np.deg2rad(THETA_PROXIMITY_TOL_DEG)         # Proximity tolerance for reward shaping (radians)
-QUATERNION_PENALTY = 1.0        # Penalty weight for quaternion error
 OMEGA_PENALTY = 0.5               # Penalty weight for omega error
 ACTION_PENALTY = 0.1              # Penalty weight for action magnitude
 PROXIMITY_PENALTY = 5.0          # Reward for being within proximity tolerance
 GOAL_REWARD = 50.0              # Bonus for reaching goal
-
-
-
-ACTION_PARALLEL_PENALTY = 0.1        # Penalty weight for magnetic dipole parallel to magnetic field
-ACTION_PERPENDICULAR_PENALTY = 0.1    # Penalty weight for magnetic dipole perpendicular to magnetic field
-THETA_PROGRESS_COEFF = 0.0
-OMEGA_PROGRESS_COEFF = 0.0
-
 
 # MPC Parameters
 REPLAN_FREQ = 1
@@ -140,7 +127,7 @@ BATCH_SIZE = 256
 
 BETA_DECAY = 0.99                       # Beta decay for DAgger
 NUM_EPS_STORED = 100
-MAX_BUFFER_SIZE = MAX_EPISODE_LENGTH * NUM_EPS_STORED                # Replay buffer size
+MAX_BUFFER_SIZE = MAX_EPISODE_STEPS * NUM_EPS_STORED                # Replay buffer size
 NUM_ITERATIONS = 50
 NUM_TRAJECTORIES = 10
 NUM_GRADIENT_STEPS = 50
@@ -200,32 +187,18 @@ os.makedirs(CHECKPOINT_PATH, exist_ok=True)
 
 def make_env(dynamics_params: Dict, seed: int = None):
     """Create and wrap environment."""
-    planet = PLANET
-
+  
     env = SpacecraftEnv(
         dynamics_params=dynamics_params,
-        planet=planet,
         dt=DT,
-        N_orbit=N_ORBIT,
-        # num_steps=MAX_EPISODE_STEPS,
+        num_steps=MAX_EPISODE_STEPS,
         dyn_noise_std=DYN_NOISE_STD,
         state_limits=np.array(STATE_LIMITS),
         control_limits=CONTROL_LIMIT_SCALE * np.array([[-1, 1]] * 3),
-        normalize_mag=NORMALIZE_MAG,
-        mag_field_horizon=MAG_FIELD_HORIZON,
-        mag_field_scale=MAG_FIELD_SCALE,
-        const_mag_field=CONST_MAG_FIELD,
         theta_threshold=THETA_THRESHOLD,
         omega_threshold=OMEGA_THRESHOLD,
-        theta_proximity_tol=THETA_PROXIMITY_TOL,
-        quaternion_penalty=QUATERNION_PENALTY,
         omega_penalty=OMEGA_PENALTY,
-        action_parallel_penalty=ACTION_PARALLEL_PENALTY,
-        action_perpendicular_penalty=ACTION_PERPENDICULAR_PENALTY,
-        proximity_penalty=PROXIMITY_PENALTY,
         goal_reward=GOAL_REWARD,
-        theta_progress_coeff=THETA_PROGRESS_COEFF,
-        omega_progress_coeff=OMEGA_PROGRESS_COEFF
     )
     
     # Wrap with Monitor for episode logging
@@ -274,10 +247,8 @@ def get_config() -> dict:
             "timestamp": TIMESTAMP,
         },
         "environment": {
-            "planet": "earth" if PLANET is Earth else "uranus",
             "dt": DT,
-            "n_orbit": N_ORBIT,
-            "max_episode_length": MAX_EPISODE_LENGTH,
+            "max_episode_length": MAX_EPISODE_STEPS,
             "dyn_noise_std": DYN_NOISE_STD,
             "state_limits_quat": STATE_LIMITS if STATE_LIMITS is not None else None,
             "state_limits_mrp": STATE_LIMITS_MRP.tolist() if STATE_LIMITS_MRP is not None else None,
@@ -291,7 +262,6 @@ def get_config() -> dict:
             "num_gradient_steps": NUM_GRADIENT_STEPS,
             "batch_size": BATCH_SIZE,
             "learning_rate": LEARNING_RATE,
-            # "beta_init": BETA,
             "beta_decay": BETA_DECAY,
             "max_buffer_size": MAX_BUFFER_SIZE,
         },
@@ -300,22 +270,15 @@ def get_config() -> dict:
         },
         "mpc": {
             "horizon": HORIZON,
-            # "q_diag": Q_DIAG,
-            # "r_diag": R_DIAG,
-            # "qf_diag": QF_DIAG,
         },
         "training": {
             "seed": SEED,
             "log_every": LOG_EVERY,
             "checkpoint_frequency": CHECKPOINT_FREQUENCY,
-            # "eval_frequency": EVAL_FREQUENCY,
-            # "n_eval_episodes": N_EVAL_EPISODES,
         },
         "paths": {
             "expert_model": RL_SAVE_PATH,
-            # "expert_vecnorm": EXPERT_VECNORM_PATH,
             "checkpoint_dir": CHECKPOINT_PATH,
-            # "log_dir": LOG_DIR,
         },
         "resume": {
             "resumed": RESUME_TRAINING,
@@ -846,6 +809,7 @@ def evaluate(controller: DiffMPCController,
 
     # Load learned magnetic field models
     model_path = URANUS_MPC_PATH + '/models/'
+    PLANET = Earth  
     if PLANET is Earth:
         model_s, _ = load_model(filename=model_path + '/earth_b_4d.eqx') 
     elif PLANET is Uranus:
@@ -1095,7 +1059,7 @@ def main():
 
     model_path = URANUS_MPC_PATH + '/models/'
 
-    planet = PLANET
+    planet = Earth
 
     if planet is Earth:
         model_s, _ = load_model(filename=model_path + '/earth_b_4d.eqx') 
@@ -1195,7 +1159,7 @@ def main():
                                                             key=key,
                                                             num_iterations=NUM_ITERATIONS,
                                                             num_trajectories=NUM_TRAJECTORIES,
-                                                            max_episode_length=MAX_EPISODE_LENGTH,
+                                                            max_episode_length=MAX_EPISODE_STEPS,
                                                             num_gradient_steps=NUM_GRADIENT_STEPS,
                                                             batch_size=BATCH_SIZE,
                                                             beta_decay=BETA_DECAY,
@@ -1224,7 +1188,7 @@ def main():
     # eqx.tree_serialise_leaves(optimizer_state_save_path, optimizer_state)
 
     # Do evaluations
-    evaluate(controller, max_steps=MAX_EPISODE_LENGTH, num_episodes=100, key=key)
+    evaluate(controller, max_steps=MAX_EPISODE_STEPS, num_episodes=100, key=key)
 
 
 def dry_test():
