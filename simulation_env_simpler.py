@@ -94,6 +94,7 @@ class SpacecraftEnv(gym.Env):
             action_penalty: Optional[float] = 0.1,
             goal_reward: Optional[float] = 10.0,
             ):
+        
         super().__init__()
         self.dynamics_params = dynamics_params
         self.dt = dt

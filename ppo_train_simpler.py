@@ -63,18 +63,12 @@ DYNAMICS_PARAMETERS = {
 DYNAMICS_PARAMETERS["inertia_inv"] = np.linalg.inv(DYNAMICS_PARAMETERS["inertia"]) 
 
 # Environment
-DYN_NOISE_STD = 1e-6             
+DYN_NOISE_STD = 1e-6              # Standard deviation of dynamics noise
 DT = 0.1                         # Simulation timestep
 
 # State/action limits
 STATE_LIMITS = [[-1, 1]] * 4 + [[-2, 2]] * 3  # [quat, omega]
 CONTROL_LIMIT_SCALE = 1        # Scales [-1, 1] control limits
-
-# Mag field stuff
-NORMALIZE_MAG = True                # Whether to normalize magnetic field vector in observations
-MAG_FIELD_HORIZON = 0              # Number of future magnetic field vectors to include in observation
-MAG_FIELD_SCALE = 1e-5
-CONST_MAG_FIELD = False              # Whether to use a constant magnetic field throughout the episode
 
 # Reward shaping
 THETA_THRESHOLD = np.deg2rad(15.0)  
@@ -184,9 +178,6 @@ def get_config() -> dict:
             "omega_tol": OMEGA_THRESHOLD,
             "omega_penalty": OMEGA_PENALTY,
             "goal_reward": GOAL_REWARD,
-            "normalize_mag": NORMALIZE_MAG,
-            "mag_field_horizon": MAG_FIELD_HORIZON,
-            "const_mag_field": CONST_MAG_FIELD,
         },
         "ppo": {
             "learning_rate": LEARNING_RATE,

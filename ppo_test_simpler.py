@@ -55,10 +55,14 @@ from utils.learning import load_model
 EXPERIMENT_NAME = "spacecraft_ppo_v1_torque_only"
 EXPERIMENT_NOTES = "Initial PPO training on Earth orbit"
 
+DYNAMICS_PARAMETERS = {
+    "mass": 0.75,
+    "inertia": np.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
+}
+DYNAMICS_PARAMETERS["inertia_inv"] = np.linalg.inv(DYNAMICS_PARAMETERS["inertia"]) 
+
 # Environment
-PLANET = "earth"                 # "earth" or "uranus"
 DT = 0.1                         # Simulation timestep
-N_ORBIT = 5000                   # Orbit trajectory length
 DYN_NOISE_STD = 1e-6             # Dynamics noise
 MAX_EPISODE_STEPS = 1500          # Max steps per episode
 
@@ -66,29 +70,12 @@ MAX_EPISODE_STEPS = 1500          # Max steps per episode
 STATE_LIMITS = [[-1, 1]] * 4 + [[-2, 2]] * 3  # [quat, omega]
 CONTROL_LIMIT_SCALE = 1        # Scales [-1, 1] control limits
 
-# Mag field stuff
-NORMALIZE_MAG = True                # Whether to normalize magnetic field vector in observations
-MAG_FIELD_HORIZON = 0              # Number of future magnetic field vectors to include in observation
-MAG_FIELD_SCALE = 1e-5
-CONST_MAG_FIELD = False              # Whether to use a constant magnetic field throughout the episode
-
 # Reward shaping
 THETA_THRESHOLD = np.deg2rad(15.0)  # Convert to radians
 OMEGA_THRESHOLD = np.deg2rad(5.0)                 # Angular velocity tolerance (rad/s)
-THETA_PROXIMITY_TOL_DEG = 50.0        # Proximity tolerance for reward shaping (degrees)
-THETA_PROXIMITY_TOL = np.deg2rad(THETA_PROXIMITY_TOL_DEG)         # Proximity tolerance for reward shaping (radians)
-QUATERNION_PENALTY = 1.0        # Penalty weight for quaternion error
 OMEGA_PENALTY = 0.1               # Penalty weight for omega error
 ACTION_PENALTY = 0.01              # Penalty weight for action magnitude
-PROXIMITY_PENALTY = 5.0          # Reward for being within proximity tolerance
 GOAL_REWARD = 50.0              # Bonus for reaching goal
-
-
-
-ACTION_PARALLEL_PENALTY = 0.1        # Penalty weight for magnetic dipole parallel to magnetic field
-ACTION_PERPENDICULAR_PENALTY = 0.1    # Penalty weight for magnetic dipole perpendicular to magnetic field
-THETA_PROGRESS_COEFF = 0.0
-OMEGA_PROGRESS_COEFF = 0.0
 
 
 # Evaluation stuff
@@ -117,37 +104,18 @@ MODEL_PATH = os.path.join(SAVE_PATH, "final_model.zip")
 
 def make_env(dynamics_params: Dict, seed: int = None):
     """Create and wrap environment."""
-    if PLANET.lower() == "earth":
-        planet = Earth
-    elif PLANET.lower() == "uranus":
-        planet = Uranus
-    else:
-        raise ValueError(f"Unknown planet: {PLANET}. Choose from ['earth', 'uranus']")
-    
+  
     env = SpacecraftEnv(
         dynamics_params=dynamics_params,
-        planet=planet,
         dt=DT,
-        N_orbit=N_ORBIT,
         num_steps=MAX_EPISODE_STEPS,
         dyn_noise_std=DYN_NOISE_STD,
         state_limits=np.array(STATE_LIMITS),
         control_limits=CONTROL_LIMIT_SCALE * np.array([[-1, 1]] * 3),
-        normalize_mag=NORMALIZE_MAG,
-        mag_field_horizon=MAG_FIELD_HORIZON,
-        mag_field_scale=MAG_FIELD_SCALE,
-        const_mag_field=CONST_MAG_FIELD,
         theta_threshold=THETA_THRESHOLD,
         omega_threshold=OMEGA_THRESHOLD,
-        theta_proximity_tol=THETA_PROXIMITY_TOL,
-        quaternion_penalty=QUATERNION_PENALTY,
         omega_penalty=OMEGA_PENALTY,
-        action_parallel_penalty=ACTION_PARALLEL_PENALTY,
-        action_perpendicular_penalty=ACTION_PERPENDICULAR_PENALTY,
-        proximity_penalty=PROXIMITY_PENALTY,
         goal_reward=GOAL_REWARD,
-        theta_progress_coeff=THETA_PROGRESS_COEFF,
-        omega_progress_coeff=OMEGA_PROGRESS_COEFF
     )
     
     # Wrap with Monitor for episode logging
@@ -182,6 +150,7 @@ def evaluate_model(env: VecNormalize, model, num_episodes=100, seed=0):
 
 
     for ep in range(num_episodes):
+        print(f"Evaluating episode {ep + 1}/{num_episodes}...")
         raw_obs, _ = raw_env.reset(seed=seed + ep)
         obs = env.normalize_obs(raw_obs)  
 
@@ -420,7 +389,7 @@ def main():
     # Path to magnetic field models
     model_path = URANUS_MPC_PATH + '/models/'
 
-    planet = Earth if PLANET.lower() == "earth" else Uranus
+    planet = Earth 
 
     # Load learned magnetic field models
     if planet is Earth:
@@ -445,7 +414,6 @@ def main():
     print("=" * 60)
     print(f"EXPERIMENT: {EXPERIMENT_NAME}")
     print("=" * 60)
-    print(f"Planet:       {PLANET}")
     print(f"Save path:    {SAVE_PATH}")
     print(f"Log path:     {LOG_PATH}")
     if EXPERIMENT_NOTES:
@@ -454,7 +422,7 @@ def main():
 
 
     # make env
-    eval_env = DummyVecEnv([lambda: make_env(dynamics_params=dynamics_params, seed=None)])
+    eval_env = DummyVecEnv([lambda: make_env(dynamics_params=DYNAMICS_PARAMETERS, seed=None)])
     eval_env = VecNormalize.load(os.path.join(SAVE_PATH, "vecnormalize_stats.pkl"), eval_env)
     eval_env.training = False
     eval_env.norm_reward = False
