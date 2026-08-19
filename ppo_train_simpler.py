@@ -56,11 +56,15 @@ from utils.learning import load_model
 EXPERIMENT_NAME = "spacecraft_ppo_random_test"
 EXPERIMENT_NOTES = "Initial PPO training on Earth orbit"
 
+DYNAMICS_PARAMETERS = {
+    "mass": 0.75,
+    "inertia": np.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
+}
+DYNAMICS_PARAMETERS["inertia_inv"] = np.linalg.inv(DYNAMICS_PARAMETERS["inertia"]) 
+
 # Environment
-PLANET = "earth"                 # "earth" or "uranus"
+DYN_NOISE_STD = 1e-6             
 DT = 0.1                         # Simulation timestep
-N_ORBIT = 5000                   # Orbit trajectory length
-DYN_NOISE_STD = 1e-6             # Dynamics noise
 
 # State/action limits
 STATE_LIMITS = [[-1, 1]] * 4 + [[-2, 2]] * 3  # [quat, omega]
@@ -73,30 +77,12 @@ MAG_FIELD_SCALE = 1e-5
 CONST_MAG_FIELD = False              # Whether to use a constant magnetic field throughout the episode
 
 # Reward shaping
-THETA_THRESHOLD = np.deg2rad(15.0)  # Convert to radians
+THETA_THRESHOLD = np.deg2rad(15.0)  
 OMEGA_THRESHOLD = np.deg2rad(5.0)                 # Angular velocity tolerance (rad/s)
-THETA_PROXIMITY_TOL_DEG = 50.0        # Proximity tolerance for reward shaping (degrees)
-THETA_PROXIMITY_TOL = np.deg2rad(THETA_PROXIMITY_TOL_DEG)         # Proximity tolerance for reward shaping (radians)
-QUATERNION_PENALTY = 1.0        # Penalty weight for quaternion error
 OMEGA_PENALTY = 0.5               # Penalty weight for omega error
 ACTION_PENALTY = 0.1              # Penalty weight for action magnitude
-PROXIMITY_PENALTY = 5.0          # Reward for being within proximity tolerance
 GOAL_REWARD = 50.0              # Bonus for reaching goal
 
-
-
-ACTION_PARALLEL_PENALTY = 0.1        # Penalty weight for magnetic dipole parallel to magnetic field
-ACTION_PERPENDICULAR_PENALTY = 0.1    # Penalty weight for magnetic dipole perpendicular to magnetic field
-THETA_PROGRESS_COEFF = 0.0
-OMEGA_PROGRESS_COEFF = 0.0
-
-# TODO:
-# Add reward terms to heavier penalize magnetic dipole component along magnetic field
-# Check training logs to check if agent is over/underfitting, saturating, 
-# Not enough neurons, not enough exploration, not enough training time, not good reward shaping, not enough reward signal
-
-# TODO: 
-# Consider using torque as an action space instead of magnetic dipole moment
 
 # PPO Hyperparameters
 LEARNING_RATE = 1e-3
@@ -190,16 +176,12 @@ def get_config() -> dict:
             "timestamp": TIMESTAMP,
         },
         "environment": {
-            "planet": PLANET,
             "dt": DT,
-            "n_orbit": N_ORBIT,
             "num_steps": MAX_EPISODE_STEPS,
-            "dyn_noise_std": DYN_NOISE_STD,
             "state_limits": STATE_LIMITS,
             "control_limit_scale": CONTROL_LIMIT_SCALE,
             "theta_tol": THETA_THRESHOLD,
             "omega_tol": OMEGA_THRESHOLD,
-            "quaternion_penalty": QUATERNION_PENALTY,
             "omega_penalty": OMEGA_PENALTY,
             "goal_reward": GOAL_REWARD,
             "normalize_mag": NORMALIZE_MAG,
@@ -244,37 +226,18 @@ def save_config(config: dict, path: str):
 
 def make_env(dynamics_params: Dict, seed: int = None):
     """Create and wrap environment."""
-    if PLANET.lower() == "earth":
-        planet = Earth
-    elif PLANET.lower() == "uranus":
-        planet = Uranus
-    else:
-        raise ValueError(f"Unknown planet: {PLANET}. Choose from ['earth', 'uranus']")
-    
     env = SpacecraftEnv(
         dynamics_params=dynamics_params,
-        planet=planet,
         dt=DT,
-        N_orbit=N_ORBIT,
         num_steps=MAX_EPISODE_STEPS,
         dyn_noise_std=DYN_NOISE_STD,
         state_limits=np.array(STATE_LIMITS),
         control_limits=CONTROL_LIMIT_SCALE * np.array([[-1, 1]] * 3),
-        normalize_mag=NORMALIZE_MAG,
-        mag_field_horizon=MAG_FIELD_HORIZON,
-        mag_field_scale=MAG_FIELD_SCALE,
-        const_mag_field=CONST_MAG_FIELD,
         theta_threshold=THETA_THRESHOLD,
         omega_threshold=OMEGA_THRESHOLD,
-        theta_proximity_tol=THETA_PROXIMITY_TOL,
-        quaternion_penalty=QUATERNION_PENALTY,
         omega_penalty=OMEGA_PENALTY,
-        action_parallel_penalty=ACTION_PARALLEL_PENALTY,
-        action_perpendicular_penalty=ACTION_PERPENDICULAR_PENALTY,
-        proximity_penalty=PROXIMITY_PENALTY,
+        action_penalty=ACTION_PENALTY,
         goal_reward=GOAL_REWARD,
-        theta_progress_coeff=THETA_PROGRESS_COEFF,
-        omega_progress_coeff=OMEGA_PROGRESS_COEFF
     )
     
     # Wrap with Monitor for episode logging
@@ -334,7 +297,6 @@ def main():
     print("=" * 60)
     print(f"EXPERIMENT: {EXPERIMENT_NAME}")
     print("=" * 60)
-    print(f"Planet:       {PLANET}")
     print(f"Timesteps:    {TOTAL_TIMESTEPS:,}")
     print(f"Save path:    {SAVE_PATH}")
     print(f"Log path:     {LOG_PATH}")
@@ -349,36 +311,14 @@ def main():
     # Set seeds
     set_seed(SEED)
 
-    # Dynamics
-    model_path = URANUS_MPC_PATH + '/models/'
-    if PLANET.lower() == "earth":
-        planet = Earth
-    elif PLANET.lower() == "uranus":
-        planet = Uranus
-    if planet is Earth:
-        model_s, _ = load_model(filename=model_path + '/earth_b_4d.eqx') 
-    elif planet is Uranus:
-        model_s, _ = load_model(filename=model_path + '/uranus_b_4d.eqx')
-    spacecraft_dynamics = SpacecraftDynamics(mag_model=model_s,planet=planet)
-    dynamics_params = spacecraft_dynamics.dynamics_params
     
     # Create environments
     print("[INFO] Creating environments...")
-    # train_env = make_env(dynamics=spacecraft_dynamics, seed=SEED)
-    # eval_env = make_env(dynamics=spacecraft_dynamics, seed=SEED + 1000)
+
         # ====== 1. Create Training Env with VecNormalize ======
-    train_env = DummyVecEnv([lambda: make_env(dynamics_params=dynamics_params, seed=SEED)])
+    train_env = DummyVecEnv([lambda: make_env(dynamics_params=DYNAMICS_PARAMETERS, seed=SEED)])
     
 
-    # Same for eval_env:
-    # eval_env = DummyVecEnv([lambda: make_env(dynamics=spacecraft_dynamics, seed=SEED + 1000)])
-    # eval_env = VecNormalize(
-    #     eval_env,
-    #     norm_obs=True,
-    #     norm_reward=True,
-    #     training=False,
-    #     clip_obs=10.0,
-    # )
     
     # Test environment
     print("[DEBUG] Testing environment...")

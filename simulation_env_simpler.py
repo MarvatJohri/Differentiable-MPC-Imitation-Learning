@@ -69,57 +69,36 @@ sns.set_theme(context='paper', style='whitegrid', font='serif', font_scale=1.5)
 
 jax.devices() # verify GPU is available
 
+DYNAMICS_PARAMETERS = {
+    "mass": 0.75,
+    "inertia": np.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
+}
+DYNAMICS_PARAMETERS["inertia_inv"] = np.linalg.inv(DYNAMICS_PARAMETERS["inertia"]) 
 
 
 class SpacecraftEnv(gym.Env):
 
     def __init__(
             self,
-            dynamics_params: Dict = {
-            "mass": 0.75,
-            "inertia": jnp.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
-        },
+            dynamics_params,
             dt: Optional[float] = 0.1,
             num_steps: Optional[int] = 1500,
-            render_mode: Optional[str] = None,
             state_limits: Optional[np.ndarray] = None,
             control_limits: Optional[np.ndarray] = None,
             max_torque: Optional[float] = 5e-5,
-            mag_field_horizon: Optional[int] = 1,
-            normalize_mag: Optional[bool] = True,
-            mag_field_scale: Optional[float] = 1e-4,
             dyn_noise_std: Optional[float] = 1e-6,
-            const_mag_field: Optional[bool] = False,
-            planet=Earth,
-            N_orbit: Optional[int] = 5000,
-            b_noise_std: Optional[float] = 0.0,
-            b_bias: Optional[np.ndarray] = np.zeros((3,)),
             theta_threshold: Optional[float] = 0.5,
             omega_threshold: Optional[float] = 0.1,
             theta_threshold_reward: Optional[float] = 10.0,
             omega_penalty: Optional[float] = 0.1,
-            theta_proximity_tol: Optional[float] = 1,
-            quaternion_penalty: Optional[float] = 10.0,
             action_penalty: Optional[float] = 0.1,
-            action_parallel_penalty: Optional[float] = 0.1,
-            action_perpendicular_penalty: Optional[float] = 1.0,
             goal_reward: Optional[float] = 10.0,
-            proximity_penalty: Optional[float] = 1.0,
-            theta_progress_coeff: Optional[float] = 1.0,
-            omega_progress_coeff: Optional[float] = 1.0,
             ):
         super().__init__()
         self.dynamics_params = dynamics_params
-        self.dynamics_params["inertia_inv"] = jnp.linalg.inv(self.dynamics_params["inertia"]) 
         self.dt = dt
         self.num_steps = num_steps
-        self.render_mode = render_mode
-        self.mag_field_horizon = mag_field_horizon
-        self.normalize_mag = normalize_mag 
-        self.mag_field_scale = mag_field_scale
-        self.const_mag_field = const_mag_field
         self.max_torque = max_torque
-        
 
         if state_limits is None:
             self.state_limits = np.asarray([[-1, 1]]*4 + [[-2,2]]*3, dtype=np.float32) # default state limits for quaternion and angular velocity
@@ -139,37 +118,16 @@ class SpacecraftEnv(gym.Env):
 
 
 
-        self.planet = planet 
-        self.b_noise_std = b_noise_std
-        # Default b_bias is zeros
-        self.b_bias = np.zeros((3,)) if b_bias is None else np.asarray(b_bias)
 
 
         # Tolerances for checking if goal reached
         self.theta_threshold = theta_threshold
         self.omega_threshold = omega_threshold
-        self.theta_proximity_tol = theta_proximity_tol
-        self.proximity_penalty = proximity_penalty
         # Reward parameters
         self.omega_penalty = omega_penalty
-        self.quaternion_penalty = quaternion_penalty
         self.action_penalty = action_penalty
-        self.action_parallel_penalty = action_parallel_penalty
-        self.action_perpendicular_penalty = action_perpendicular_penalty
         self.goal_reward = goal_reward
-        self.theta_progress_coeff = theta_progress_coeff
-        self.omega_progress_coeff = omega_progress_coeff
         self.theta_threshold_reward = theta_threshold_reward
-
-        # Stuff related to orbit dynamics and magnetic field generation
-        self.N_orbit = N_orbit
-        self.orbit_dynamics = OrbitDynamics(Planet=self.planet)
-        self.orbit_system = TrajectoryGenerator(dynamics=self.orbit_dynamics, dt=self.dt)
-
-        # Make a check to ensure N_orbit has enough steps for horizon + num_steps
-        if self.N_orbit < self.mag_field_horizon + self.num_steps:
-            raise ValueError(f"N_orbit ({self.N_orbit}) must be greater than or equal to episode length ({self.num_steps}) + mag_field_horizon ({self.mag_field_horizon}) = {self.mag_field_horizon + self.num_steps}.")
-
 
         # self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(13,), dtype=np.float32)
         # self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
@@ -192,24 +150,7 @@ class SpacecraftEnv(gym.Env):
         obs_low = np.array([0, -1, -1, -1, -4, -4, -4], dtype=np.float32)
         obs_high = np.array([1, 1, 1, 1, 4, 4, 4], dtype=np.float32)
 
-        # if self.normalize_mag:
-        #     # mag field over horizon
-        #     obs_low_mag = -1 * np.ones((self.mag_field_horizon*3,), dtype=np.float32)
-        #     obs_high_mag = 1 * np.ones((self.mag_field_horizon*3,), dtype=np.float32)
-        # else:
-        #     # mag field over horizon
-        #     obs_low_mag = -np.inf * np.ones((self.mag_field_horizon*3,), dtype=np.float32)
-        #     obs_high_mag = np.inf * np.ones((self.mag_field_horizon*3,), dtype=np.float32)
-
-        # obs_low = np.concatenate([obs_low_state, obs_low_mag])
-        # obs_high = np.concatenate([obs_high_state, obs_high_mag])
-
         self.observation_space = spaces.Box(low=obs_low, high=obs_high, dtype=np.float32)
-
-
-
-
-        # There's probably a smarter way to do this but I'm lazy
         self.state_space = spaces.Box(low=self.state_limits[:, 0], high=self.state_limits[:, 1], dtype=np.float32)
     
 
@@ -232,16 +173,6 @@ class SpacecraftEnv(gym.Env):
 
         # jit the step function
         self.rk4_step_jit = jax.jit(self.rk4_step)
-
-
-    # def sample_state(self, key):
-    #     # No reason to change this yet
-    #     specs = [
-    #         {"shape": (4,), "dist": "quaternion"},
-    #         {"shape": (3,), "dist": "uniform", "min": 0.0, "max": 0.0},
-    #     ]
-    #     return sample_initial_states(batch_size=1, key=key, state_specs=specs)[0]
-    
 
     def debug_episode(self):
         """Run one episode and print diagnostics."""
@@ -288,14 +219,7 @@ class SpacecraftEnv(gym.Env):
 
 
         # init_key, orbit_key, target_key, mag_key, mag_new_key = jrandom.split(key, 5)
-        init_key, orbit_key, target_key, mag_key = jrandom.split(key, 4)
-
-
-        # Compute normalization constant - max absolute value across all components and timesteps
-        # self.B_max = np.max(np.abs(np.array(b_traj))) 
-        
-        # Debug print (remove after verification)
-        # print(f"B_max: {self.B_max:.2e} nT, B_range: [{np.min(b_traj):.2e}, {np.max(b_traj):.2e}]")
+        init_key, target_key = jrandom.split(key, 2)
 
 
         # Generate initial and target states for spacecraft
@@ -319,15 +243,6 @@ class SpacecraftEnv(gym.Env):
         I have absolutely zero idea if I am supposed to do this but I'm copying his code so whatever
         
         """
-
-
-        # # Get random b-field, always start at beginning of orbit (orbit start points already randomized)
-        # b_batch_idx = jnp.arange(b_traj.shape[0])
-        # mag_new_key, b_key  = jrandom.split(mag_new_key)
-        # shuffled_indices = jrandom.permutation(b_key, b_batch_idx)
-        # batch_indices = shuffled_indices[:1]  # Select the first index from the shuffled indices
-        # b_batch = b_traj[batch_indices, :, :]
-
         context = {
             "initial_state": initial_state,
             "goal_state": target_state,
@@ -410,7 +325,7 @@ class SpacecraftEnv(gym.Env):
         return new_state
 
 
-    def rk4_step(self, state, control, t, external_dynamics_param, key, noise_std):
+    def rk4_step(self, state, control, t, key, noise_std):
         # Ctrl C Ctrl V from Patrick's code
         def dynamics_wrapper(s,k):
             key, noise_key = jrandom.split(k)
@@ -446,7 +361,6 @@ class SpacecraftEnv(gym.Env):
             "goal_state": self.goal_state,
             "current_step": self.step_count,
             "current_state": self.state,
-            "b_traj": self.episode_initial_context["b_traj"],
         }
     
     # Left quaternion product (used in the quaternion dynamics)
@@ -553,7 +467,6 @@ class SpacecraftEnv(gym.Env):
         action_norm = np.linalg.norm(action)
 
         # Normalize for consistent scaling
-        angle_error_normalized = angle_error / np.pi  # [0, 1]
         omega_error_normalized = omega_error_norm / self.max_omega_norm
         action_normalized = action_norm / self.max_action_norm
 
@@ -647,7 +560,7 @@ class SpacecraftEnv(gym.Env):
         b_traj = 0
         self._step_key, noise_key = jrandom.split(self._step_key)
 
-        self.state = self.rk4_step(self.state, action, step_idx * self.dt, b_traj, noise_key, self.dyn_noise_std)
+        self.state = self.rk4_step(self.state, action, step_idx * self.dt, noise_key, self.dyn_noise_std)
 
         # Enforce state limits
         # self.state = np.clip(self.state, self.state_limits[:, 0], self.state_limits[:, 1])
@@ -667,7 +580,6 @@ class SpacecraftEnv(gym.Env):
 
         q_err = obs[0:4]
         omega_err = obs[4:7]
-        b_normalized = obs[7:]
 
         # reward = self._get_reward(q_err, omega_err)
 
@@ -678,12 +590,12 @@ class SpacecraftEnv(gym.Env):
 
 
         #------------------Reward Computation----------------------
-        if self.prev_angle_error is not None:
-            angle_improvement = self.prev_angle_error - 2 * np.arccos(np.clip(np.abs(q_err[0]), 0, 1))
-            omega_improvement = self.prev_omega_error - np.linalg.norm(omega_err)
-        else:
-            angle_improvement = 0.0
-            omega_improvement = 0.0
+        # if self.prev_angle_error is not None:
+        #     angle_improvement = self.prev_angle_error - 2 * np.arccos(np.clip(np.abs(q_err[0]), 0, 1))
+        #     omega_improvement = self.prev_omega_error - np.linalg.norm(omega_err)
+        # else:
+        #     angle_improvement = 0.0
+        #     omega_improvement = 0.0
         reward = self._get_reward(q_err, omega_err, action)
 
         self.step_count += 1
@@ -706,7 +618,6 @@ class SpacecraftEnv(gym.Env):
             "current_step": self.step_count,
             "current_state": self.state,
             "goal_state": self.goal_state,
-            "b_t": b_traj,
         }
 
         
