@@ -10,6 +10,7 @@ from simulation_env_simpler import SpacecraftEnv
 from typing import Callable, Tuple, List, Dict
 from quaternion_functions import q_left, q_conj, get_rotation, q_to_mrp, skew, quaternion_projection, quaternion_jacobian
 from functools import partial
+import pandas as pd
 
 MAX_TORQUE = 5e-5
 
@@ -171,6 +172,48 @@ def sample_initial_states(batch_size, key, state_specs):
         #TODO: Potentially set trajectory up as pytrees (traj.pos instead of traj[:,0:3])
     return jnp.concatenate(states, axis=-1, dtype=jnp.float64)
 
+
+# def sample_initial_states(batch_size, key, omega_min, omega_max):
+
+#     """
+#     Generates a batch of random initial states for the spacecraft environment.
+
+#     Args:
+#         batch_size: Number of states to sample.
+#         key: JAX key.
+#         omega_min: Minimum angular velocity value.
+#         omega_max: Maximum angular velocity value.
+#     """
+
+
+#     key, key_omega, key_quat = jax.random.split(key, 3)
+
+#     # Sample random angular velocity
+#     omega = jax.random.uniform(key_omega, shape=(batch_size, 3), 
+#                                minval=omega_min, maxval=omega_max,
+#                                dtype=jnp.float64)
+
+#     # Sample random unit quaternion
+#     q = jax.random.normal(key_quat, shape=(batch_size, 4), dtype=jnp.float64)
+#     q = q / jnp.linalg.norm(q, axis=-1, keepdims=True)
+
+#     return jnp.concatenate([q, omega], axis=-1, dtype=jnp.float64)
+
+
+
+
+
+# Functions for plotting and saving files and stuff 
+
+
+# def save_trajectories_to_pd_df(trajectories, file_path, )
+
+
+
+
+
+
+# Function to collect trajectories simulated
 
 
 
