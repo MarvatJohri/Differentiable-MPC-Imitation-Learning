@@ -10,7 +10,7 @@ from moreau.jax import Solver
 from diff_mpc_functions import build_mpc_solver, get_A_data, get_P_csr_data
 from quaternion_functions import q_mul, q_to_mrp, mrp_to_q, quaternion_projection, q_left, skew, quaternion_jacobian
 from mj_utils import network_output_to_QR
-from propagate_functions import linearize_and_discretize_dynamics, dynamics_params, generate_nominal_trajectory
+# from propagate_functions import linearize_and_discretize_dynamics, dynamics_params, generate_nominal_trajectory
 
 
 import time
@@ -23,7 +23,7 @@ DYNAMICS_PARAMS = {
     "mass": 0.75,
     "inertia": jnp.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
 }
-dynamics_params["inertia_inv"] = jnp.linalg.inv(dynamics_params["inertia"])
+DYNAMICS_PARAMS["inertia_inv"] = jnp.linalg.inv(DYNAMICS_PARAMS["inertia"])
 
 
 
@@ -171,11 +171,9 @@ class DiffMPCController(eqx.Module):
         # Build solver once
         self.solver, self.solver_params = build_mpc_solver(self.horizon, self.nx - 1, self.nu)
 
-    def state_dot(self, true_state: jnp.ndarray, control: jnp.ndarray, u_noise: jnp.ndarray) -> jnp.ndarray:
+    def state_dot_nominal(self, true_state: jnp.ndarray, control: jnp.ndarray, u_noise: jnp.ndarray) -> jnp.ndarray:
 
-        # state: (7,) = (q0, q1, q2, q3, w1, w2, w3)
-        # control: (3,) = (u1, u2, u3)
-        # u_noise: (3,) = noise in control input
+        # This is what the controller THINKS the dynamics are
 
         q = true_state[:4]
         w = true_state[4:7]
@@ -189,6 +187,43 @@ class DiffMPCController(eqx.Module):
     
         return state_dot
 
+    def rk4_step_nominal(self, 
+                         true_state: jnp.ndarray,
+                         control: jnp.ndarray,
+                         u_noise: jnp.ndarray,
+                         dt: float):
+
+        k1 = self.state_dot_nominal(true_state, control, u_noise)
+        k2 = self.state_dot_nominal(quaternion_projection(true_state + 0.5 * dt * k1), control, u_noise)
+        k3 = self.state_dot_nominal(quaternion_projection(true_state + 0.5 * dt * k2), control, u_noise)
+        k4 = self.state_dot_nominal(quaternion_projection(true_state + dt * k3), control, u_noise)
+
+        dx = (dt/6.0) * (k1 + 2*k2 + 2*k3 + k4)
+
+        return quaternion_projection(true_state + dx)
+
+
+    def generate_nominal_trajectory(self,
+                                    initial_state: jnp.ndarray,
+                                    num_steps: int,
+                                    control_sequence: jnp.ndarray,
+                                    dt: float):
+
+        # Generate a nominal trajectory using the nominal dynamics
+        # and a sequence of controls
+        def scan_step(state, control: jnp.ndarray):
+            u_noise = jnp.zeros(control.shape)  # No noise for nominal trajectory
+            next_state = self.rk4_step_nominal(state, control, u_noise, dt)
+            return next_state, state
+
+        final_state, trajectory = jax.lax.scan(scan_step, initial_state, control_sequence)
+        # Add final state to trajectory
+        trajectory = jnp.vstack((trajectory, final_state[None, :])) # Shape (num_steps + 1, state_dim)
+
+        return trajectory
+
+
+
     def linearize_and_discretize_dynamics(self, x_nom_traj: jnp.ndarray, u_nom_traj: jnp.ndarray, dt: float):
 
         # Here the nominal state trajectory uses q_err NOT mrp
@@ -197,8 +232,8 @@ class DiffMPCController(eqx.Module):
 
         def linearize_and_discretize_single(x, x_next, u):
             u_noise = jnp.zeros(u.shape)
-            A = jax.jacfwd(self.state_dot, argnums=0)(x, u, u_noise)
-            B = jax.jacfwd(self.state_dot, argnums=1)(x, u, u_noise)
+            A = jax.jacfwd(self.state_dot_nominal, argnums=0)(x, u, u_noise)
+            B = jax.jacfwd(self.state_dot_nominal, argnums=1)(x, u, u_noise)
 
             A = quaternion_jacobian(x_next).T @ A @ quaternion_jacobian(x)
             B = quaternion_jacobian(x_next).T @ B
@@ -222,7 +257,7 @@ class DiffMPCController(eqx.Module):
         # Returns matrices that can be used by the moreau optimal control solver 
 
         # Get sequence of A, B matrices using linearization
-        A, B = linearize_and_discretize_dynamics(nom_traj, nom_control, self.dt)
+        A, B = self.linearize_and_discretize_dynamics(nom_traj, nom_control, self.dt)
 
         # Get A data
         A_data = get_A_data(A, B, self.solver_params)
@@ -326,7 +361,7 @@ class DiffMPCController(eqx.Module):
 
         # Generate a nominal trajectory using previous control inputs
         # this is the "true" nominal trajectory, accounts for non-linearity (but not noise), unlike solution from ocp
-        x_nominal, _ = self.generate_nominal_trajectory(x0, self.horizon, u_nominal, self.dt)
+        x_nominal = self.generate_nominal_trajectory(x0, self.horizon, u_nominal, self.dt)
 
         dx0 = self.get_error_coordinates(x0,x_nominal[0])
         dxgoal = jax.vmap(self.get_error_coordinates,in_axes=(None, 0))(x_goal, x_nominal)

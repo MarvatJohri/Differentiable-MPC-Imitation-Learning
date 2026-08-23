@@ -13,7 +13,7 @@ from typing import Dict, Optional, Tuple, NamedTuple
 import jax
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_default_matmul_precision", "highest")
-jax.config.update("jax_default_dtype_bits", "64")
+# jax.config.update("jax_default_dtype_bits", "64")
 import jax.numpy as jnp
 from jaxtyping import Float, Array
 import equinox as eqx

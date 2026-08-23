@@ -70,7 +70,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecNormalize
 from simulation_env_simpler import SpacecraftEnv
 from replay_buffer import ReplayBuffer, init_buffer, add_trajectories_to_buffer, sample_from_buffer, can_sample_buffer
 from mj_utils import network_output_to_QR
-from propagate_functions import sample_episode_context, generate_trajectory
+# from propagate_functions import sample_episode_context, generate_trajectory
 from diffmpc_controller import DiffMPCController, FeedForwardNetwork, build_mpc_solver
 
 
@@ -835,9 +835,9 @@ def learn(env: VecNormalize,
             save_il_model(controller, replay_buffer, opt_state, beta, itr, key, checkpoint_path)
 
         # Evaluate
-        if itr % evaluate_freq == 0:
-            key, subkey = jax.random.split(key)
-            evaluate(controller, max_episode_length, num_eval_eps, subkey)
+        # if itr % evaluate_freq == 0:
+        #     key, subkey = jax.random.split(key)
+        #     evaluate(controller, max_episode_length, num_eval_eps, subkey)
 
     return controller, replay_buffer, opt_state, beta, key
 
