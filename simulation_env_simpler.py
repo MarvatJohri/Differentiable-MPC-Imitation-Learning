@@ -473,6 +473,16 @@ class SpacecraftEnv(gym.Env):
 
         reward = 0.0
 
+        # Consider returning flat reward of -50 or smthng if 
+        # omega is beyond state limits, to prevent spinning out of control
+        # This _shouldn't_ be a problem since I'm penalizing omega in the reward function
+        # BUT technically speaking enforcing state limits
+        # is an incorrect method of handling dynamics
+        # And since the QP controller
+        # Strictly enforces the state limits,
+        # there should be no way for agent to spin out of control FOR THE CONTROLLER
+        # NOT the RL agent, need to strictly enforce this somehow
+
         # Reward proposed in NASA paper
         ra = np.exp(-angle_error/(0.28*np.pi))
 
@@ -558,7 +568,6 @@ class SpacecraftEnv(gym.Env):
         # For external dynamics param we need to get bfield at current step
         step_idx = self.step_count
 
-        b_traj = 0
         self._step_key, noise_key = jrandom.split(self._step_key)
 
         self.state = self.rk4_step(self.state, action, step_idx * self.dt, noise_key, self.dyn_noise_std)

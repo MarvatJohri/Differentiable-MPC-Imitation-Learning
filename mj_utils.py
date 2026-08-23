@@ -174,3 +174,29 @@ def sample_initial_states(batch_size, key, state_specs):
 
 
 
+def sample_state(batch_size, key, omega_min=0.0, omega_max=0.0):
+
+    """
+    Samples a batch of random states for the spacecraft environment.
+
+    Args:
+        batch_size: Number of states to sample.
+        key: JAX key.
+        omega_min: Minimum angular velocity (rad/s).
+        omega_max: Maximum angular velocity (rad/s).
+    """
+
+    # Sample omega uniformly
+    key, subkey = jax.random.split(key)
+    omega = jax.random.uniform(subkey, 
+                               shape=(batch_size, 3), 
+                               minval=omega_min, 
+                               maxval=omega_max, 
+                               dtype=jnp.float64)
+
+    # Sample quaternion
+    key, subkey = jax.random.split(key)
+    q = jax.random.normal(subkey, shape=(batch_size, 4), dtype=jnp.float64)
+    q = q / jnp.linalg.norm(q, axis=-1, keepdims=True)
+
+    return jnp.concatenate([q, omega], axis=-1, dtype=jnp.float64)

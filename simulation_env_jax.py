@@ -8,11 +8,15 @@ Abstracts from stuff cause I need it to look similar to the gym env
 """
 import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple, NamedTuple
 
 import jax
+jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_default_matmul_precision", "highest")
+jax.config.update("jax_default_dtype_bits", "64")
 import jax.numpy as jnp
 from jaxtyping import Float, Array
+import equinox as eqx
 
 # Enforce dtype of float64 for all jax arrays
 jax.config.update("jax_default_matmul_precision", "highest")
@@ -21,10 +25,15 @@ jax.devices()
 
 
 from quaternion_functions import q_left, q_conj, get_rotation, q_to_mrp, skew, quaternion_projection, quaternion_jacobian
+from mj_utils import sample_state
 
 
-import equinox as eqx
-
+class EnvState(NamedTuple):
+    state: jnp.ndarray
+    goal_state: jnp.ndarray
+    step_count: int
+    step_key: jax.random.PRNGKey
+    
 
 
 
@@ -61,8 +70,8 @@ class SpacecraftEnvJax(eqx.Module):
                  dynamics_params,
                  dt: Optional[float] = 0.1,
                  max_env_steps: Optional[int] = 1500,
-                 state_limits: Array = None,
-                 control_limits: Array = None,
+                 state_limits: Optional[jnp.ndarray] = None,
+                 control_limits: Optional[jnp.ndarray] = None,
                  max_torque: Optional[float] = 5e-5,
                  dyn_noise_std: Optional[float] = 1e-6,
                  theta_threshold: Optional[float] = 0.5,
@@ -103,6 +112,61 @@ class SpacecraftEnvJax(eqx.Module):
 
         self.max_omega_norm = jnp.linalg.norm(self.state_limits[4:, 1])
         self.max_action_norm = jnp.linalg.norm(self.control_limits[:, 1])
+
+    def _sample_episode_context(self, key: jax.random.PRNGKey) -> Tuple[jnp.ndarray, jnp.ndarray]:
+
+        init_key, target_key = jax.random.split(key)
+
+        target_state = sample_state(1, target_key, self.state_limits)[0]
+        initial_state = sample_state(1, init_key, self.state_limits)[0]
+
+        return initial_state, target_state
+
+ 
+
+    def _get_obs(self, state: jnp.ndarray, goal_state: jnp.ndarray) -> jnp.ndarray:
+
+
+        q = state[:4]
+        w = state[4:7]
+
+        q_goal = goal_state[:4]
+        w_goal = goal_state[4:7]
+
+        q_err = q_left(q_goal) @ q
+        # Fix sign ambiguity 
+        q_err = jnp.where(q_err[0] < 0, -q_err, q_err, dtype=jnp.float64)
+        # Normalize
+        q_err = q_err / jnp.linalg.norm(q_err, dtype=jnp.float64)
+        w_err = w - w_goal
+
+        return jnp.concatenate([q_err, w_err], axis=0, dtype=jnp.float64)
+
+
+    def reset(self, seed, options=None):
+
+        # Unlike normal gym envs, seed is REQUIRED
+        # (Cause I use seeds in original collect trajectory)
+
+        key = jax.random.PRNGKey(seed)
+        key, subkey = jax.random.split(key)
+
+        initial_state, target_state = self._sample_episode_context(subkey)
+        step_key = key
+        step_count = 0
+
+        # Make initial env state
+        init_env_state = EnvState(state=initial_state,
+                                  goal_state=target_state,
+                                  step_count=step_count,
+                                  step_key=step_key)
+
+        init_obs = self._get_obs(initial_state, target_state)
+
+        info = (initial_state, target_state) # The only info thats really needed
+
+        # All returns will be in this format, so that it can be used in jax.jit and jax.vmap
+        return init_env_state, init_obs, info
 
     # Dynamics
     def state_dot(self, state: jnp.ndarray, control: jnp.ndarray, u_noise: jnp.ndarray) -> jnp.ndarray:
@@ -166,7 +230,58 @@ class SpacecraftEnvJax(eqx.Module):
 
         dx = (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
-        return quaternion_projection(state + dx)
+        new_state = quaternion_projection(state + dx)
+        # Clip only angular velocity, quaternion taken care of inside quaternion_projection
+        # new_state = jnp.concatenate([new_state[:4], jnp.clip(new_state[4:7], self.state_limits[4:, 0], self.state_limits[4:, 1])], axis=0)
+        
+        # Clipping ang vel SHOULDN'T be necessary
+        
+        return new_state
+    
+
+    def step(self, 
+             env_state: EnvState, 
+             action: jnp.ndarray):
+
+
+        """
+        
+        Don't need to do reward computation
+        
+        """
+
+        # Clip action to be within control limits
+        action = jnp.clip(action, self.control_limits[:, 0], self.control_limits[:, 1])
+
+        # Unpack env state
+        state = env_state.state
+        goal_state = env_state.goal_state
+        step_count = env_state.step_count
+        step_key = env_state.step_key
+
+        step_key, noise_key = jax.random.split(step_key)
+
+        new_state = self.rk4_step(state, action, noise_key)
+
+        obs = self._get_obs(new_state, goal_state)
+
+        step_count += 1
+
+        # Update env state
+        new_env_state = EnvState(state=new_state,
+                                 goal_state=goal_state,
+                                 step_count=step_count,
+                                 step_key=step_key)
+
+        info = (new_state, goal_state, step_count, step_key)
+
+        return new_env_state, obs, info
+        
+
+
+
+
+    
 
         
 
