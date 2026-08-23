@@ -1,13 +1,14 @@
 import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
+from jaxtyping import Float, Array
 from typing import NamedTuple
 import equinox as eqx
 
 from moreau.jax import Solver
 
 from diff_mpc_functions import build_mpc_solver, get_A_data, get_P_csr_data
-from quaternion_functions import q_mul, q_to_mrp, mrp_to_q
+from quaternion_functions import q_mul, q_to_mrp, mrp_to_q, quaternion_projection, q_left, skew, quaternion_jacobian
 from mj_utils import network_output_to_QR
 from propagate_functions import linearize_and_discretize_dynamics, dynamics_params, generate_nominal_trajectory
 
@@ -18,7 +19,11 @@ import time
 
 
 
-
+DYNAMICS_PARAMS = {
+    "mass": 0.75,
+    "inertia": jnp.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
+}
+dynamics_params["inertia_inv"] = jnp.linalg.inv(dynamics_params["inertia"])
 
 
 
@@ -134,8 +139,11 @@ class DiffMPCController(eqx.Module):
     nu: int = eqx.field(static=True)
     dt: float = eqx.field(static=True)
 
-    state_limits: jnp.ndarray = eqx.field(static=True)
-    control_limits: jnp.ndarray = eqx.field(static=True)
+    state_limits: Float[Array, "6 2"] = eqx.field(static=True)
+    control_limits: Float[Array, "6 2"] = eqx.field(static=True)
+    inertia: Float[Array, "3 3"] = eqx.field(static=True)
+    inertia_inv: Float[Array, "3 3"] = eqx.field(static=True)
+    mass: float = eqx.field(static=True)
 
     solver: Solver = eqx.field(static=True)
     solver_params: dict = eqx.field(static=True)
@@ -144,7 +152,8 @@ class DiffMPCController(eqx.Module):
 
 
     def __init__(self, network: FeedForwardNetwork, horizon, dt,
-                 state_limits, control_limits):
+                 state_limits, control_limits,
+                 dynamics_params = DYNAMICS_PARAMS):
 
         self.network = network
         self.nx = network.nx
@@ -154,10 +163,58 @@ class DiffMPCController(eqx.Module):
         self.dt = dt
         self.state_limits = state_limits
         self.control_limits = control_limits
+        self.inertia = dynamics_params["inertia"]
+        self.inertia_inv = dynamics_params["inertia_inv"]
+        self.mass = dynamics_params["mass"]
 
 
         # Build solver once
         self.solver, self.solver_params = build_mpc_solver(self.horizon, self.nx - 1, self.nu)
+
+    def state_dot(self, true_state: jnp.ndarray, control: jnp.ndarray, u_noise: jnp.ndarray) -> jnp.ndarray:
+
+        # state: (7,) = (q0, q1, q2, q3, w1, w2, w3)
+        # control: (3,) = (u1, u2, u3)
+        # u_noise: (3,) = noise in control input
+
+        q = true_state[:4]
+        w = true_state[4:7]
+    
+        tau = control + u_noise
+    
+        q_dot = 0.5 * q_left(q) @ jnp.concatenate((jnp.array([0.0]), w))
+        w_dot = self.inertia_inv @ (tau - skew(w) @ self.inertia @ w) # cross product a x b = a_skew_symmetric @ b
+    
+        state_dot = jnp.concatenate((q_dot, w_dot))
+    
+        return state_dot
+
+    def linearize_and_discretize_dynamics(self, x_nom_traj: jnp.ndarray, u_nom_traj: jnp.ndarray, dt: float):
+
+        # Here the nominal state trajectory uses q_err NOT mrp
+        # Converted to mrp using E
+        nx = x_nom_traj.shape[1] - 1 # Shape should be 7 for q_err + omega
+
+        def linearize_and_discretize_single(x, x_next, u):
+            u_noise = jnp.zeros(u.shape)
+            A = jax.jacfwd(self.state_dot, argnums=0)(x, u, u_noise)
+            B = jax.jacfwd(self.state_dot, argnums=1)(x, u, u_noise)
+
+            A = quaternion_jacobian(x_next).T @ A @ quaternion_jacobian(x)
+            B = quaternion_jacobian(x_next).T @ B
+
+            A = jnp.eye(nx) + A*dt
+            B = B*dt
+
+            return A, B
+
+        Ad, Bd = jax.vmap(linearize_and_discretize_single)(x_nom_traj[:-1], x_nom_traj[1:], u_nom_traj)
+
+        # jax.debug.print("Ad NaN: {}, Bd NaN: {}", jnp.isnan(Ad).any(), jnp.isnan(Bd).any())
+        # jax.debug.print("Ad range: [{}, {}]", Ad.min(), Ad.max())
+        # jax.debug.print("Bd range: [{}, {}]", Bd.min(), Bd.max())
+
+        return Ad, Bd
 
 
     def form_ocp_moreau(self, x0, xg, nom_traj, nom_control, Q_seq, R_seq):
@@ -269,7 +326,7 @@ class DiffMPCController(eqx.Module):
 
         # Generate a nominal trajectory using previous control inputs
         # this is the "true" nominal trajectory, accounts for non-linearity (but not noise), unlike solution from ocp
-        x_nominal, _ = generate_nominal_trajectory(x0, self.horizon, u_nominal, self.dt)
+        x_nominal, _ = self.generate_nominal_trajectory(x0, self.horizon, u_nominal, self.dt)
 
         dx0 = self.get_error_coordinates(x0,x_nominal[0])
         dxgoal = jax.vmap(self.get_error_coordinates,in_axes=(None, 0))(x_goal, x_nominal)

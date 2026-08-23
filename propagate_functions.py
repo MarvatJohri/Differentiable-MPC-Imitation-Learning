@@ -49,54 +49,6 @@ dynamics_params["inertia_inv"] = jnp.linalg.inv(dynamics_params["inertia"])
 #     return jnp.concatenate((q_err, omega_err))
 
 
-# # Code for linearization of dynamics about nominal trajectory
-# def state_dot(state, control, t, u_noise):
-
-#     inertia = dynamics_params["inertia"]
-#     inertia_inverse = dynamics_params["inertia_inv"]
-
-#     q = state[:4]
-#     w = state[4:7]
-
-#     tau = control + u_noise
-
-#     q_dot = 0.5 * q_left(q) @ jnp.concatenate((jnp.array([0.0]), w))
-#     w_dot = inertia_inverse @ (tau - skew(w) @ inertia @ w) # cross product a x b = a_skew_symmetric @ b
-
-#     state_dot = jnp.concatenate((q_dot, w_dot))
-
-#     return state_dot
-
-
-
-
-@jax.jit
-def linearize_and_discretize_dynamics(x_nom_traj: jnp.ndarray, u_nom_traj: jnp.ndarray, dt: float):
-
-    # Here the nominal state trajectory uses q_err NOT mrp
-    # Converted to mrp using E
-    nx = x_nom_traj.shape[1] - 1 # Shape should be 7 for q_err + omega
-
-    def linearize_and_discretize_single(x, x_next, u):
-        u_noise = jnp.zeros(u.shape)
-        A = jax.jacfwd(state_dot, argnums=0)(x, u, 0.0, u_noise)
-        B = jax.jacfwd(state_dot, argnums=1)(x, u, 0.0, u_noise)
-
-        A = quaternion_jacobian(x_next).T @ A @ quaternion_jacobian(x)
-        B = quaternion_jacobian(x_next).T @ B
-
-        A = jnp.eye(nx) + A*dt
-        B = B*dt
-
-        return A, B
-
-    Ad, Bd = jax.vmap(linearize_and_discretize_single)(x_nom_traj[:-1], x_nom_traj[1:], u_nom_traj)
-
-    # jax.debug.print("Ad NaN: {}, Bd NaN: {}", jnp.isnan(Ad).any(), jnp.isnan(Bd).any())
-    # jax.debug.print("Ad range: [{}, {}]", Ad.min(), Ad.max())
-    # jax.debug.print("Bd range: [{}, {}]", Bd.min(), Bd.max())
-
-    return Ad, Bd
 
 # def rk4_step(state, control, t, dt):
 
