@@ -355,9 +355,6 @@ def generate_trajectory(env: SpacecraftEnvJax,
             
 
 
-
-
-
     # Initialize stuff
 
     # Env
@@ -378,6 +375,13 @@ def generate_trajectory(env: SpacecraftEnvJax,
     final_env_state, final_obs, final_i, final_nominal_traj, final_nominal_cntrl, final_key = final_carry
     observations, expert_actions, nominal_trajs, nominal_cntrls = outputs
 
+    observations = jnp.concatenate([observations, final_obs[None, :]], axis=0)
+    final_expert_action = expert_policy(final_obs)
+    expert_actions = jnp.concatenate([expert_actions, final_expert_action[None, :]], axis=0)
+
+    nominal_trajs = jnp.concatenate([nominal_trajs, final_nominal_traj[None, :]], axis=0)
+    nominal_cntrls = jnp.concatenate([nominal_cntrls, final_nominal_cntrl[None, :]], axis=0)
+
     trajectory = (observations, init_env_state.goal_state, expert_actions, nominal_trajs, nominal_cntrls)
 
     return trajectory, final_key
@@ -391,7 +395,7 @@ def generate_trajectory(env: SpacecraftEnvJax,
     # }, final_key
 
 @eqx.filter_jit
-def generate_batch_trajectories(env: SpacecraftEnvJax,
+def generate_n_trajectories(env: SpacecraftEnvJax,
                                 controller: DiffMPCController,
                                 expert_policy: Callable,
                                 key: jax.random.PRNGKey,
@@ -402,27 +406,6 @@ def generate_batch_trajectories(env: SpacecraftEnvJax,
 
     return jax.vmap(generate_trajectory, in_axes=(None, None, None, 0, None, None, None))(env, controller, expert_policy, jax.random.split(key, n_trajectories), beta, max_ep_steps, replan_freq)
 
-
-@eqx.filter_jit
-def generate_n_trajectories(env: SpacecraftEnvJax, 
-                            controller: DiffMPCController,
-                            expert_policy: Callable, 
-                            key: jax.random.PRNGKey, 
-                            beta: float,
-                            max_ep_steps: int,
-                            n_trajectories: int,
-                            replan_freq: int = 1):
-
-    def scan_step(carry, _):
-        key = carry
-        key, subkey = jax.random.split(key)
-        trajectory, new_key = generate_trajectory(env, controller, expert_policy, subkey, beta, max_ep_steps, replan_freq)
-        return new_key, trajectory
-
-    init_carry = key
-    final_key, trajectories = jax.lax.scan(scan_step, init_carry, xs=None, length=n_trajectories)
-
-    return trajectories, final_key
 
     
 if __name__ == "__main__":

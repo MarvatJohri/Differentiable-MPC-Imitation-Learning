@@ -199,4 +199,8 @@ def sample_state(batch_size, key, omega_min=0.0, omega_max=0.0):
     q = jax.random.normal(subkey, shape=(batch_size, 4), dtype=jnp.float64)
     q = q / jnp.linalg.norm(q, axis=-1, keepdims=True)
 
-    return jnp.concatenate([q, omega], axis=-1, dtype=jnp.float64)
+    return jnp.concatenate([q, omega], axis=-1)
+
+
+
+# def save_data_to_df(trajectories, filepath, labels, dt)

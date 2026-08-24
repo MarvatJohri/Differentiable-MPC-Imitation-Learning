@@ -1106,7 +1106,7 @@ def test_jax_env():
                                                     key=key,
                                                     beta=0.5,
                                                     max_ep_steps=MAX_EPISODE_LENGTH,
-                                                    n_trajectories=100)
+                                                    n_trajectories=10)
     end = time.time()
     print("Time take for generating 10 trajectories AFTER jit compiling using vmap: ", end-start)
 
@@ -1119,7 +1119,7 @@ def test_jax_env():
                                                     key=key,
                                                     beta=0.5,
                                                     max_ep_steps=MAX_EPISODE_LENGTH,
-                                                    n_trajectories=100)
+                                                    n_trajectories=10)
     end = time.time()
     print("Time take for generating 10 trajectories AFTER jit compiling using vmap AFTER vmap jit compiles: ", end-start)
 
