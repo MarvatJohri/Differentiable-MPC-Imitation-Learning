@@ -1,11 +1,11 @@
 import jax
-jax.config.update("jax_enable_x64", True)
+# jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 import numpy as np
 
 import gymnasium as gym
-from simulation_env_simpler import SpacecraftEnv
+# from simulation_env_simpler import SpacecraftEnv
 
 from typing import Callable, Tuple, List, Dict
 from quaternion_functions import q_left, q_conj, get_rotation, q_to_mrp, skew, quaternion_projection, quaternion_jacobian

@@ -40,20 +40,20 @@ sys.path.insert(0, str((ROOT / "uranus-mpc").resolve()))
 sys.path.insert(0, str((ROOT / "uranus-mpc" / "utils").resolve()))
 
 # Your environment imports - adjust as needed
-from dynamics.base_dynamics import Dynamics
-from dynamics.spacecraft_dynamics import SpacecraftDynamics
-from dynamics.orbit_dynamics import OrbitDynamics
+# from dynamics.base_dynamics import Dynamics
+# from dynamics.spacecraft_dynamics import SpacecraftDynamics
+# from dynamics.orbit_dynamics import OrbitDynamics
 from simulation_env_simpler import SpacecraftEnv
-from dynamics.planetary_params import Earth, Uranus
+# from dynamics.planetary_params import Earth, Uranus
 
-from utils.learning import load_model
+# from utils.learning import load_model
 
 # =============================================================================
 # EXPERIMENT CONFIG - EDIT THIS SECTION
 # =============================================================================
 
 # Experiment params
-EXPERIMENT_NAME = "spacecraft_ppo_random_test"
+EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
 EXPERIMENT_NOTES = "Initial PPO training on Earth orbit"
 
 DYNAMICS_PARAMETERS = {

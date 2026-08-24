@@ -40,18 +40,19 @@ import pandas as pd
 
 import optax
 
-from utils.propagate import TrajectoryGenerator, sample_initial_states
-from dynamics.quaternion_functions import S, q_left, q_conj, get_rotation, q_to_mrp
-from utils.coord_transforms import coord
-from utils.plotting import save_data_to_pd_df
+# from utils.propagate import TrajectoryGenerator, sample_initial_states
+from mj_utils import sample_state
+# from dynamics.quaternion_functions import S, q_left, q_conj, get_rotation, q_to_mrp
+# from utils.coord_transforms import coord
+# from utils.plotting import save_data_to_pd_df
 
-from dynamics.base_dynamics import Dynamics
-from dynamics.spacecraft_dynamics import SpacecraftDynamics
-from dynamics.orbit_dynamics import OrbitDynamics
-from dynamics.planetary_params import Earth, Uranus
-from dynamics.magnetic_field import MagneticFieldModel
+# from dynamics.base_dynamics import Dynamics
+# from dynamics.spacecraft_dynamics import SpacecraftDynamics
+# from dynamics.orbit_dynamics import OrbitDynamics
+# from dynamics.planetary_params import Earth, Uranus
+# from dynamics.magnetic_field import MagneticFieldModel
 
-from utils.learning import Trainer, load_model, save_model
+# from utils.learning import Trainer, load_model, save_model
 
 
 import gymnasium as gym
@@ -234,10 +235,11 @@ class SpacecraftEnv(gym.Env):
                     {'shape': (3,), 'dist': 'uniform', 'min': 0.0, 'max': 0.0} # angular velocity
         ]
 
-        target_state = sample_initial_states(batch_size=1, key=target_key, state_specs=target_state_specs)[0]
-        initial_state = sample_initial_states(batch_size=1, key=init_key, state_specs=init_state_specs)[0]
+        # target_state = sample_initial_states(batch_size=1, key=target_key, state_specs=target_state_specs)[0]
+        # initial_state = sample_initial_states(batch_size=1, key=init_key, state_specs=init_state_specs)[0]
 
-
+        target_state = sample_state(batch_size=1, key=target_key, omega_min=0.0, omega_max=0.0)[0]
+        initial_state = sample_state(batch_size=1, key=init_key, omega_min=0.0, omega_max=0.0)[0]
 
         """
         
@@ -456,6 +458,9 @@ class SpacecraftEnv(gym.Env):
         # if np.linalg.norm(self.state[4:]) > 1.5:  # Arbitrary threshold for angular velocity
         #     self.failure = True
         #     return True
+        if np.any(np.abs(self.state[4:]) > self.state_limits[4:, 1]):
+            self.failure = True
+            return True
 
         return False
 
@@ -482,6 +487,14 @@ class SpacecraftEnv(gym.Env):
         # Strictly enforces the state limits,
         # there should be no way for agent to spin out of control FOR THE CONTROLLER
         # NOT the RL agent, need to strictly enforce this somehow
+
+        # Check if omega is beyond state limits, if so return a big negative reward
+        # This is technically not correct but since
+        # I've only considered initializations where omega_desired = 0, this technically works
+        if np.any(np.abs(omega_err) > self.state_limits[4:, 1]):
+            reward -= 50.0  # Arbitrary large penalty for exceeding angular velocity limits
+            return reward
+
 
         # Reward proposed in NASA paper
         ra = np.exp(-angle_error/(0.28*np.pi))
@@ -540,7 +553,7 @@ class SpacecraftEnv(gym.Env):
         
 
         # terminated = self.reached or self.failure
-        terminated = False
+        terminated = self.failure
 
         # if self.reached:
         #     print(f"Terminating episode: goal reached at step {self.step_count}.")
@@ -576,7 +589,7 @@ class SpacecraftEnv(gym.Env):
         # self.state = np.clip(self.state, self.state_limits[:, 0], self.state_limits[:, 1])
 
         # Only clip angular velocity part of state, not quaternion
-        self.state[4:] = np.clip(self.state[4:], self.state_limits[4:, 0], self.state_limits[4:, 1])
+        # self.state[4:] = np.clip(self.state[4:], self.state_limits[4:, 0], self.state_limits[4:, 1])
 
         # Normalize quaternion part of state
         # self.state[:4] = self.normalize_quat(self.state[:4])
