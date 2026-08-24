@@ -72,6 +72,7 @@ from replay_buffer import ReplayBuffer, init_buffer, add_trajectories_to_buffer,
 from mj_utils import network_output_to_QR
 # from propagate_functions import sample_episode_context, generate_trajectory
 from diffmpc_controller import DiffMPCController, FeedForwardNetwork, build_mpc_solver
+from simulation_env_jax import SpacecraftEnvJax, generate_trajectory, generate_batch_trajectories, generate_n_trajectories
 
 
 
@@ -843,7 +844,36 @@ def learn(env: VecNormalize,
 
 
 
+def get_expert_policy(expert_policy: PPO, vec_env: VecNormalize):
 
+
+    # Extract the expert policy's actor module and parameters
+    actor_module = expert_policy.policy.actor
+    actor_params = expert_policy.policy.actor_state.params
+
+    # Extract the vector normalization statistics
+    obs_mean = jnp.array(vec_env.obs_rms.mean, dtype=jnp.float32)
+    obs_var = jnp.array(vec_env.obs_rms.var, dtype=jnp.float32)
+    obs_count = vec_env.obs_rms.count
+    obs_eps = vec_env.epsilon
+    obs_clip = vec_env.clip_obs
+
+    def expert_policy_fn(obs: jnp.ndarray) -> jnp.ndarray:
+        # Cast down to float32 for the actor module
+        obs = obs.astype(jnp.float32)
+
+        # Normalize the observation
+        normalized_obs = (obs - obs_mean) / jnp.sqrt(obs_var + obs_eps)
+        normalized_obs = jnp.clip(normalized_obs, -obs_clip, obs_clip)
+
+        # Pass through the actor module to get the action
+        dist = actor_module.apply(actor_params, normalized_obs[None, :])
+        action = dist.mode()[0]  # Get the mode of the distribution and remove the batch dimension
+        action = jnp.clip(action, -1.0, 1.0)  # Ensure action is within [-1, 1]
+        return action.astype(jnp.float64)  # Cast back to float64 for consistency
+
+
+    return expert_policy_fn
 
 
 
@@ -997,12 +1027,160 @@ def dry_test():
 
 
 
+def test_jax_env():
+    # Test the JAX environment wrapper
+    env = SpacecraftEnvJax()
+
+    model_path = URANUS_MPC_PATH + '/models/'
+    
+    planet = Earth
+
+    if planet is Earth:
+        model_s, _ = load_model(filename=model_path + '/earth_b_4d.eqx') 
+    elif planet is Uranus:
+        model_s, _ = load_model(filename=model_path + '/uranus_b_4d.eqx')
+
+
+    spacecraft_dynamics = SpacecraftDynamics(mag_model=model_s,planet=planet)
+    dynamics_params = spacecraft_dynamics.dynamics_params
+    system = TrajectoryGenerator(dynamics=spacecraft_dynamics, dt=DT)
+
+    # Make the env
+    # Not changing defaults for now (don't really need to besides ep length)
+    # env = SpacecraftEnv()
+    vec_env = DummyVecEnv([lambda: make_env(dynamics_params=dynamics_params, seed=None)])
+    vec_env = VecNormalize.load(os.path.join(RL_SAVE_PATH, "vecnormalize_stats.pkl"), vec_env)
+    vec_env.training = False
+    vec_env.norm_reward = False
+
+    # set rng
+    key = jax.random.PRNGKey(SEED)
+    key, subkey = jax.random.split(key)
+
+    # Initialize model
+    network = FeedForwardNetwork(nx=7, 
+                                nu=3, 
+                                key=subkey, 
+                                layers=LAYERS, 
+                                activation=ACTIVATION, 
+                                output_activation=OUTPUT_ACTIVATION, 
+                                output_horizon=OUTPUT_HORIZON, 
+                                eps=NETWORK_EPSILON, 
+                                decomposition_type=DECOMPOSITION_TYPE)
+
+
+    # Initialize controller
+    controller = DiffMPCController(network,HORIZON,DT,STATE_LIMITS_MRP,CONTROL_LIMITS)
+
+    # rl policy
+    rl_path = os.path.join(RL_SAVE_PATH, "final_model.zip")
+    rl_model = PPO.load(rl_path, env=vec_env)
+    expert_policy = get_expert_policy(rl_model, vec_env)
+
+    start = time.time()
+    trajectory, key = generate_trajectory(env=env,
+                                          controller=controller,
+                                          expert_policy=expert_policy,
+                                          key=key,
+                                          beta=0.5,
+                                          max_ep_steps=MAX_EPISODE_LENGTH)
+    end = time.time()
+
+    print("Time take for generating one trajectory: ", end-start)
+
+    start = time.time()
+    trajectory, key = generate_trajectory(env=env,
+                                            controller=controller,
+                                            expert_policy=expert_policy,
+                                            key=key,
+                                            beta=0.5,
+                                            max_ep_steps=MAX_EPISODE_LENGTH)
+    end = time.time()
+    print("Time take for generating one trajectory AFTER jit compiling: ", end-start)
+
+
+    start = time.time()
+    trajectories, keys = generate_batch_trajectories(env=env,
+                                                    controller=controller,
+                                                    expert_policy=expert_policy,
+                                                    key=key,
+                                                    beta=0.5,
+                                                    max_ep_steps=MAX_EPISODE_LENGTH,
+                                                    n_trajectories=100)
+    end = time.time()
+    print("Time take for generating 10 trajectories AFTER jit compiling using vmap: ", end-start)
+
+
+    start = time.time()
+    key = keys[0]
+    trajectories, keys = generate_batch_trajectories(env=env,
+                                                    controller=controller,
+                                                    expert_policy=expert_policy,
+                                                    key=key,
+                                                    beta=0.5,
+                                                    max_ep_steps=MAX_EPISODE_LENGTH,
+                                                    n_trajectories=100)
+    end = time.time()
+    print("Time take for generating 10 trajectories AFTER jit compiling using vmap AFTER vmap jit compiles: ", end-start)
+
+
+    # Also test collecting trajectories for training
+    key = keys[0]
+    start = time.time()
+    trajectories, key = collect_trajectory(env=vec_env,
+                                            expert_policy=rl_model,
+                                            controller=controller,
+                                            max_episode_length=MAX_EPISODE_LENGTH,
+                                            beta=0.5,
+                                            key=key)
+    end = time.time()
+    print("Time take for collecting one trajectory not using jax stuff: ", end-start)
+
+    
+    # start = time.time()
+    # trajectories, key = collect_trajectories(env=vec_env,
+    #                                         expert_policy=expert_policy,
+    #                                         controller=controller,
+    #                                         num_trajectories=10,
+    #                                         max_episode_length=MAX_EPISODE_LENGTH,
+    #                                         beta=0.5,
+    #                                         key=key)
+    # end = time.time()
+    # print("Time take for collecting 10 trajectories not using jax stuff: ", end-start)
+
+    start = time.time()
+    trajectories, key = generate_n_trajectories(env=env,
+                                                controller=controller,
+                                                expert_policy=expert_policy,
+                                                key=key,
+                                                n_trajectories=10,
+                                                max_ep_steps=MAX_EPISODE_LENGTH,
+                                                beta=0.5)
+    end = time.time()
+    print("Time take for generating 10 trajectories using jax.lax.scan: ", end-start)
+
+    start = time.time()
+    trajectories, key = generate_n_trajectories(env=env,
+                                                controller=controller,
+                                                expert_policy=expert_policy,
+                                                key=key,
+                                                n_trajectories=10,
+                                                max_ep_steps=MAX_EPISODE_LENGTH,
+                                                beta=0.5)
+    end = time.time()
+    print("Time take for generating 10 trajectories using jax.lax.scan AFTER jit compilation: ", end-start)
+
+    
+
+
 
 
 
 if __name__ == "__main__":
 
 
-    main()
+    # main()
+
+    test_jax_env()
 
     # dry_test()
