@@ -1100,7 +1100,7 @@ def test_jax_env():
 
 
     start = time.time()
-    trajectories, keys = generate_batch_trajectories(env=env,
+    trajectories, keys = generate_n_trajectories(env=env,
                                                     controller=controller,
                                                     expert_policy=expert_policy,
                                                     key=key,
@@ -1113,7 +1113,7 @@ def test_jax_env():
 
     start = time.time()
     key = keys[0]
-    trajectories, keys = generate_batch_trajectories(env=env,
+    trajectories, keys = generate_n_trajectories(env=env,
                                                     controller=controller,
                                                     expert_policy=expert_policy,
                                                     key=key,
@@ -1137,39 +1137,6 @@ def test_jax_env():
     print("Time take for collecting one trajectory not using jax stuff: ", end-start)
 
     
-    # start = time.time()
-    # trajectories, key = collect_trajectories(env=vec_env,
-    #                                         expert_policy=expert_policy,
-    #                                         controller=controller,
-    #                                         num_trajectories=10,
-    #                                         max_episode_length=MAX_EPISODE_LENGTH,
-    #                                         beta=0.5,
-    #                                         key=key)
-    # end = time.time()
-    # print("Time take for collecting 10 trajectories not using jax stuff: ", end-start)
-
-    start = time.time()
-    trajectories, key = generate_n_trajectories(env=env,
-                                                controller=controller,
-                                                expert_policy=expert_policy,
-                                                key=key,
-                                                n_trajectories=10,
-                                                max_ep_steps=MAX_EPISODE_LENGTH,
-                                                beta=0.5)
-    end = time.time()
-    print("Time take for generating 10 trajectories using jax.lax.scan: ", end-start)
-
-    start = time.time()
-    trajectories, key = generate_n_trajectories(env=env,
-                                                controller=controller,
-                                                expert_policy=expert_policy,
-                                                key=key,
-                                                n_trajectories=10,
-                                                max_ep_steps=MAX_EPISODE_LENGTH,
-                                                beta=0.5)
-    end = time.time()
-    print("Time take for generating 10 trajectories using jax.lax.scan AFTER jit compilation: ", end-start)
-
     
 
 
