@@ -1,8 +1,10 @@
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import jax
 import jax.numpy as jnp
 from flax import struct
+
+from functools import partial
 
 # Load configuration from config.py
 
@@ -43,16 +45,16 @@ def add_transitions_to_buffer(buffer: ReplayBuffer,
                               nominal_cntrl: jnp.ndarray
                               ) -> ReplayBuffer:
 
-    # All inputs MUST be batched, i.e., (batch_size, feature_dim)
+    # All inputs MUST be batched, i.e., (T, feature_dim)
 
-    batch_size = obs.shape[0]
+    T = obs.shape[0]
     ptr = buffer.ptr
 
     # Handle wrap around
-    indices = (ptr + jnp.arange(batch_size)) % buffer.max_size
+    indices = (ptr + jnp.arange(T)) % buffer.max_size
 
-    new_ptr = (ptr + batch_size) % buffer.max_size
-    new_size = jnp.minimum(buffer.size + batch_size, buffer.max_size)
+    new_ptr = (ptr + T) % buffer.max_size
+    new_size = jnp.minimum(buffer.size + T, buffer.max_size)
 
     # replace the data at the calculated indics
     new_buffer = buffer.replace(
@@ -67,28 +69,50 @@ def add_transitions_to_buffer(buffer: ReplayBuffer,
     return new_buffer
 
 
-def add_trajectories_to_buffer(buffer: ReplayBuffer, 
-                               trajectories: List[Dict[str, jnp.ndarray]],
-                               ) -> ReplayBuffer:
+# def add_trajectories_to_buffer(buffer: ReplayBuffer, 
+#                                trajectories: List[Dict[str, jnp.ndarray]],
+#                                ) -> ReplayBuffer:
 
-    obs = jnp.concatenate([traj["obs"] for traj in trajectories], axis=0)
-    expert_actions = jnp.concatenate([traj["expert_actions"] for traj in trajectories], axis=0)
-    nominal_traj = jnp.concatenate([traj["nominal_traj"] for traj in trajectories], axis=0)
-    nominal_cntrl = jnp.concatenate([traj["nominal_cntrl"] for traj in trajectories], axis=0)
+#     obs = jnp.concatenate([traj["obs"] for traj in trajectories], axis=0)
+#     expert_actions = jnp.concatenate([traj["expert_actions"] for traj in trajectories], axis=0)
+#     nominal_traj = jnp.concatenate([traj["nominal_traj"] for traj in trajectories], axis=0)
+#     nominal_cntrl = jnp.concatenate([traj["nominal_cntrl"] for traj in trajectories], axis=0)
 
-    goal_state = []
-    for traj in trajectories:
-        goal = traj["goal_state"]
-        if goal.ndim == 1:
+#     goal_state = []
+#     for traj in trajectories:
+#         goal = traj["goal_state"]
+#         if goal.ndim == 1:
 
-            T = traj["obs"].shape[0]
-            goal = jnp.broadcast_to(goal, (T, goal.shape[0]))
-        goal_state.append(goal)
-    goal_state = jnp.concatenate(goal_state, axis=0)
+#             T = traj["obs"].shape[0]
+#             goal = jnp.broadcast_to(goal, (T, goal.shape[0]))
+#         goal_state.append(goal)
+#     goal_state = jnp.concatenate(goal_state, axis=0)
 
 
-    return add_transitions_to_buffer(buffer, obs, goal_state, expert_actions, nominal_traj, nominal_cntrl)
+#     return add_transitions_to_buffer(buffer, obs, goal_state, expert_actions, nominal_traj, nominal_cntrl)
 
+
+
+
+
+
+@jax.jit
+def add_trajectories_to_buffer(buffer: ReplayBuffer,
+                               trajectories: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]) -> ReplayBuffer:
+    
+
+    observations, goal_states, expert_actions, nominal_trajs, nominal_cntrls = trajectories
+
+    n_traj, T = observations.shape[0], observations.shape[1]
+
+    obs_flat           = observations.reshape((n_traj * T,) + observations.shape[2:])
+    expert_actions_flat = expert_actions.reshape((n_traj * T,) + expert_actions.shape[2:])
+    nominal_traj_flat  = nominal_trajs.reshape((n_traj * T,) + nominal_trajs.shape[2:])
+    nominal_cntrl_flat = nominal_cntrls.reshape((n_traj * T,) + nominal_cntrls.shape[2:])
+
+    goal_state_flat = jnp.repeat(goal_states, T, axis=0)
+
+    return add_transitions_to_buffer(buffer, obs_flat, goal_state_flat, expert_actions_flat, nominal_traj_flat, nominal_cntrl_flat)
 
 
 
@@ -127,7 +151,7 @@ def add_trajectories_to_buffer(buffer: ReplayBuffer,
 #     )
 #     return new_buffer
 
-# @jax.jit
+@partial(jax.jit, static_argnames=("batch_size",))
 def sample_from_buffer(buffer: ReplayBuffer, key: jax.random.PRNGKey, batch_size: int):
 
 

@@ -906,73 +906,73 @@ if __name__ == "__main__":
     """
 
 
-    dt = 0.1
-    planet = Earth # Earth, Uranus
+    # dt = 0.1
+    # planet = Earth # Earth, Uranus
 
-    N_orbit = 5000
+    # N_orbit = 5000
 
-    # Path to magnetic field models
-    model_path = URANUS_MPC_PATH + '/models/'
+    # # Path to magnetic field models
+    # model_path = URANUS_MPC_PATH + '/models/'
 
-    # Load learned magnetic field models
-    if planet is Earth:
-        model_s, _ = load_model(filename=model_path + '/earth_b_4d.eqx') 
-    elif planet is Uranus:
-        model_s, _ = load_model(filename=model_path + '/uranus_b_4d.eqx')
+    # # Load learned magnetic field models
+    # if planet is Earth:
+    #     model_s, _ = load_model(filename=model_path + '/earth_b_4d.eqx') 
+    # elif planet is Uranus:
+    #     model_s, _ = load_model(filename=model_path + '/uranus_b_4d.eqx')
 
-    noise_std_mag = 0 #[nT]
-    bias = np.array([0, 0, 0])
+    # noise_std_mag = 0 #[nT]
+    # bias = np.array([0, 0, 0])
 
-    spacecraft_dynamics = SpacecraftDynamics(mag_model=model_s,planet=planet)
+    # spacecraft_dynamics = SpacecraftDynamics(mag_model=model_s,planet=planet)
 
-    # Here state/obs is actually just quaternion and angular velocity
-    # Vary quaternion from -1 to 1, ang vel from -2 to 2 rad/s, control from -1 to 1 A-m^2
+    # # Here state/obs is actually just quaternion and angular velocity
+    # # Vary quaternion from -1 to 1, ang vel from -2 to 2 rad/s, control from -1 to 1 A-m^2
     
-    state_limits = np.array([[-1, 1]]*4 + [[-2,2]]*3)
-    control_limits = 0.8*np.array([[-1, 1]] * spacecraft_dynamics.num_controls) # limits for dipole cntrl
+    # state_limits = np.array([[-1, 1]]*4 + [[-2,2]]*3)
+    # control_limits = 0.8*np.array([[-1, 1]] * spacecraft_dynamics.num_controls) # limits for dipole cntrl
 
-    noise_std_dyn = 1e-6 # [Nm]
-
-
-    env1 = SpacecraftEnv(
-        spacecraft_dynamics, 
-        dt=dt, 
-        num_steps=200, 
-        state_limits=state_limits, 
-        control_limits=control_limits,
-        dyn_noise_std=noise_std_dyn,
-        planet=planet,
-        N_orbit=N_orbit,
-        b_noise_std=noise_std_mag,
-        b_bias=bias,
-    )
-    # obs, info = env.reset()
-    # print(obs)
-    # print(info)
-    env2 = SpacecraftEnv(
-        spacecraft_dynamics, 
-        dt=dt, 
-        num_steps=200, 
-        state_limits=state_limits, 
-        control_limits=control_limits,
-        dyn_noise_std=0.0,
-        planet=planet,
-        N_orbit=N_orbit,
-        b_noise_std=noise_std_mag,
-        b_bias=bias,
-    )
+    # noise_std_dyn = 1e-6 # [Nm]
 
 
-    # Test env2 (deterministic) rollout against manual rollout using rk4_step
-    print("Testing deterministic rollout...")
-    env_trajectory, manual_trajectory = test_trajectory_rollout(env2, num_steps=200)
-    # print("Env trajectory:\n", env_trajectory)
-    # print("Manual trajectory:\n", manual_trajectory)
+    # env1 = SpacecraftEnv(
+    #     spacecraft_dynamics, 
+    #     dt=dt, 
+    #     num_steps=200, 
+    #     state_limits=state_limits, 
+    #     control_limits=control_limits,
+    #     dyn_noise_std=noise_std_dyn,
+    #     planet=planet,
+    #     N_orbit=N_orbit,
+    #     b_noise_std=noise_std_mag,
+    #     b_bias=bias,
+    # )
+    # # obs, info = env.reset()
+    # # print(obs)
+    # # print(info)
+    # env2 = SpacecraftEnv(
+    #     spacecraft_dynamics, 
+    #     dt=dt, 
+    #     num_steps=200, 
+    #     state_limits=state_limits, 
+    #     control_limits=control_limits,
+    #     dyn_noise_std=0.0,
+    #     planet=planet,
+    #     N_orbit=N_orbit,
+    #     b_noise_std=noise_std_mag,
+    #     b_bias=bias,
+    # )
 
-    # Test env1 (stochastic) rollout against manual rollout using rk4_step
-    print("Testing stochastic rollout...")
-    env_trajectory, manual_trajectory = test_trajectory_rollout(env1, num_steps=200)
-    # print("Env trajectory:\n", env_trajectory)
-    # print("Manual trajectory:\n", manual_trajectory)
 
-    env1.debug_episode()
+    # # Test env2 (deterministic) rollout against manual rollout using rk4_step
+    # print("Testing deterministic rollout...")
+    # env_trajectory, manual_trajectory = test_trajectory_rollout(env2, num_steps=200)
+    # # print("Env trajectory:\n", env_trajectory)
+    # # print("Manual trajectory:\n", manual_trajectory)
+
+    # # Test env1 (stochastic) rollout against manual rollout using rk4_step
+    # print("Testing stochastic rollout...")
+    # env_trajectory, manual_trajectory = test_trajectory_rollout(env1, num_steps=200)
+    # # print("Env trajectory:\n", env_trajectory)
+    # # print("Manual trajectory:\n", manual_trajectory)
+
+    # env1.debug_episode()

@@ -72,9 +72,9 @@ from replay_buffer import ReplayBuffer, init_buffer, add_trajectories_to_buffer,
 from mj_utils import network_output_to_QR
 # from propagate_functions import sample_episode_context, generate_trajectory
 from diffmpc_controller import DiffMPCController, FeedForwardNetwork, build_mpc_solver
-from simulation_env_jax import SpacecraftEnvJax, generate_trajectory, generate_batch_trajectories, generate_n_trajectories
+from simulation_env_jax import SpacecraftEnvJax, generate_trajectory, generate_n_trajectories
 
-
+from functools import partial
 
 # TODO: Consider making this packaage more modular, 
 # with separate files for the network, the MPC solver, and the agent class.
@@ -87,6 +87,13 @@ RL_EXPERIMENT_NAME = "spacecraft_ppo_v1_torque_only"
 EXPERIMENT_NAME = "spacecraft_ppo_imitation_dagger_v1_torque_only_experiment1"
 EXPERIMENT_NOTES = "Initial imitation learning on Earth orbit"
 
+
+DYNAMICS_PARAMS = {
+    "mass": 0.75,
+    "inertia": jnp.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
+}
+DYNAMICS_PARAMS["inertia_inv"] = jnp.linalg.inv(DYNAMICS_PARAMS["inertia"])
+
 # Environment params
 DT = 0.1                         # Simulation timestep
 DYN_NOISE_STD = 1e-6             # Dynamics noise
@@ -98,7 +105,8 @@ STATE_LIMITS = [[-1, 1]] * 4 + [[-2, 2]] * 3  # [quat, omega]
 STATE_LIMITS_MRP = jnp.array([[-180, 180]]*3 + [[-2,2]]*3)
 CONTROL_LIMIT_SCALE = 1        # Scales [-1, 1] control limits
 MAX_TORQUE = 5e-5
-CONTROL_LIMITS = jnp.array([[-MAX_TORQUE, MAX_TORQUE]] * 3, dtype=jnp.float64) # [torque]
+CONTROL_LIMITS = jnp.array([[-CONTROL_LIMIT_SCALE, CONTROL_LIMIT_SCALE]] * 3, dtype=jnp.float64) # [normalized torque]
+CONTROL_LIMITS_TORQUE = jnp.array([[-MAX_TORQUE, MAX_TORQUE]] * 3, dtype=jnp.float64) # [torque]
 
 # Reward shaping
 THETA_THRESHOLD = np.deg2rad(15.0)  # Convert to radians
@@ -246,6 +254,7 @@ def get_config() -> dict:
             "state_limits_quat": STATE_LIMITS if STATE_LIMITS is not None else None,
             "state_limits_mrp": STATE_LIMITS_MRP.tolist() if STATE_LIMITS_MRP is not None else None,
             "control_limits": CONTROL_LIMITS.tolist() if CONTROL_LIMITS is not None else None,
+            "control_limits_torque": CONTROL_LIMITS_TORQUE.tolist() if CONTROL_LIMITS_TORQUE is not None else None,
             "theta_threshold": THETA_THRESHOLD,
             "omega_threshold": OMEGA_THRESHOLD,
             "theta_threshold_reward": THETA_THRESHOLD_REWARD,
@@ -531,6 +540,7 @@ def loss_and_grad(controller: DiffMPCController,
 #                     opt_state,)
 
 @eqx.filter_jit
+# @partial(eqx.filter_jit, static_argnames=("num_gradient_steps", "batch_size"))
 def train_loop(controller: DiffMPCController,
                optimizer: optax.GradientTransformation,
                opt_state: optax.OptState,
@@ -597,8 +607,8 @@ def train_loop(controller: DiffMPCController,
 #     return controller, opt_state, loss, key
 
 
-
-def train_iteration(env: VecNormalize,
+@eqx.filter_jit
+def train_iteration(env: SpacecraftEnvJax,
                     controller: DiffMPCController,
                     expert_policy: PPO, 
                     replay_buffer: ReplayBuffer,
@@ -610,12 +620,19 @@ def train_iteration(env: VecNormalize,
                     max_episode_length: int,
                     num_gradient_steps: int,
                     batch_size: int,
-                    beta_decay: float):
+                    beta_decay: float,
+                    replan_frequency: int = 1):
 
 
     # Collect trajectories
-    trajectories, key = collect_trajectories(env, expert_policy, controller, num_trajectories, max_episode_length, beta, key)
-
+    trajectories, key = generate_n_trajectories(env,
+                                                controller,
+                                                expert_policy,
+                                                key,
+                                                beta,
+                                                max_episode_length,
+                                                num_trajectories,
+                                                replan_frequency)
     # Debug: Check trajectory shapes before adding
     # for i, traj in enumerate(trajectories):
     #     print(f"Trajectory {i}:")
@@ -761,7 +778,7 @@ def evaluate(controller: DiffMPCController,
 
 
 
-def learn(env: VecNormalize, 
+def learn(env: SpacecraftEnvJax, 
           controller: DiffMPCController, 
           expert_policy: Callable,
           replay_buffer: ReplayBuffer,
@@ -780,6 +797,7 @@ def learn(env: VecNormalize,
           logger,
           evaluate_freq: int,
           num_eval_eps: int,
+          replan_frequency: int = 1,
           resume: bool = False):
 
 
@@ -802,21 +820,22 @@ def learn(env: VecNormalize,
 
     for itr in range(itrs_done, num_iterations):
 
-        # itr_start_time = time.time()
+        itr_start_time = time.time()
         # Do a train iteration
         controller, replay_buffer, opt_state, mean_loss, beta, key = train_iteration(env,
-                                                                                       controller,
-                                                                                       expert_policy,
-                                                                                       replay_buffer,
-                                                                                       beta,
-                                                                                       optimizer,
-                                                                                       opt_state,
-                                                                                       key,
-                                                                                       num_trajectories,
-                                                                                       max_episode_length,
-                                                                                       num_gradient_steps,
-                                                                                       batch_size,
-                                                                                       beta_decay)
+                                                                                     controller,
+                                                                                     expert_policy,
+                                                                                     replay_buffer,
+                                                                                     beta,
+                                                                                     optimizer,
+                                                                                     opt_state,
+                                                                                     key,
+                                                                                     num_trajectories,
+                                                                                     max_episode_length,
+                                                                                     num_gradient_steps,
+                                                                                     batch_size,
+                                                                                     beta_decay,
+                                                                                     replan_frequency=replan_frequency)
 
 
         itr_end_time = time.time()
@@ -827,7 +846,7 @@ def learn(env: VecNormalize,
         if itr % log_frequency == 0:
 
             # print(f"Iteration {itr}, Mean loss: {mean_loss}, time: {itr_end_time - start_time}")
-            logger.info(f"Iteration {itr}, Mean loss: {mean_loss}, beta: {beta}, time: {itr_end_time - start_time}")
+            logger.info(f"Iteration {itr}, Mean loss: {mean_loss}, beta: {beta}, time: {itr_end_time - itr_start_time}")
 
         # save checkpoint
 
@@ -880,36 +899,35 @@ def get_expert_policy(expert_policy: PPO, vec_env: VecNormalize):
 
 
 
-
-
-
 def main():
 
     # Save config
     config = get_config()
     save_config(config,SAVE_PATH)
 
-    model_path = URANUS_MPC_PATH + '/models/'
-
-    planet = Earth
-
-    if planet is Earth:
-        model_s, _ = load_model(filename=model_path + '/earth_b_4d.eqx') 
-    elif planet is Uranus:
-        model_s, _ = load_model(filename=model_path + '/uranus_b_4d.eqx')
-
-
-    spacecraft_dynamics = SpacecraftDynamics(mag_model=model_s,planet=planet)
-    dynamics_params = spacecraft_dynamics.dynamics_params
-    system = TrajectoryGenerator(dynamics=spacecraft_dynamics, dt=DT)
-
     # Make the env
+    env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMS,
+                           dt=DT,
+                           max_env_steps=MAX_EPISODE_LENGTH,
+                           state_limits=STATE_LIMITS,
+                           control_limits=CONTROL_LIMITS,
+                           max_torque=MAX_TORQUE,
+                           dyn_noise_std=DYN_NOISE_STD,
+                           theta_threshold=THETA_THRESHOLD,
+                           omega_threshold=OMEGA_THRESHOLD,
+                           theta_threshold_reward=THETA_THRESHOLD_REWARD,
+                           omega_penalty=OMEGA_PENALTY,
+                           action_penalty=ACTION_PENALTY,
+                           goal_reward=GOAL_REWARD)
+
+
+
     # Not changing defaults for now (don't really need to besides ep length)
     # env = SpacecraftEnv()
-    vec_env = DummyVecEnv([lambda: make_env(dynamics_params=dynamics_params, seed=None)])
-    vec_env = VecNormalize.load(os.path.join(RL_SAVE_PATH, "vecnormalize_stats.pkl"), vec_env)
-    vec_env.training = False
-    vec_env.norm_reward = False
+    dummy_vec_env = DummyVecEnv([lambda: make_env(dynamics_params=DYNAMICS_PARAMS, seed=None)])
+    dummy_vec_env = VecNormalize.load(os.path.join(RL_SAVE_PATH, "vecnormalize_stats.pkl"), dummy_vec_env)
+    dummy_vec_env.training = False
+    dummy_vec_env.norm_reward = False
 
     # set rng
     key = jax.random.PRNGKey(SEED)
@@ -928,7 +946,7 @@ def main():
 
 
     # Initialize controller
-    controller = DiffMPCController(network,HORIZON,DT,STATE_LIMITS_MRP,CONTROL_LIMITS)
+    controller = DiffMPCController(network,HORIZON,DT,STATE_LIMITS_MRP,CONTROL_LIMITS_TORQUE, DYNAMICS_PARAMS)
 
     
     # Initialize optimizer
@@ -946,7 +964,9 @@ def main():
 
     # Load expert policy
     rl_path = os.path.join(RL_SAVE_PATH, "final_model.zip")
-    expert_policy = PPO.load(rl_path, env=vec_env)
+    rl_model = PPO.load(rl_path, env=dummy_vec_env)
+
+    expert_policy = get_expert_policy(rl_model, dummy_vec_env)
 
 
     # Setup logger stuff
@@ -954,7 +974,7 @@ def main():
 
     # Learn stuff
     # key, subkey = jax.random.split(key)
-    controller, replay_buffer, opt_state, beta, key = learn(vec_env,
+    controller, replay_buffer, opt_state, beta, key = learn(env,
                                                             controller,
                                                             expert_policy,
                                                             replay_buffer,
@@ -1019,7 +1039,8 @@ def dry_test():
                                     horizon=10,
                                     dt=DT,
                                     state_limits=STATE_LIMITS_MRP,
-                                    control_limits=CONTROL_LIMITS)
+                                    control_limits=CONTROL_LIMITS_TORQUE,
+                                    dynamics_params=DYNAMICS_PARAMS)
 
 
     evaluate(controller, max_steps = env.num_steps, num_episodes=10, key=key)
@@ -1031,24 +1052,10 @@ def test_jax_env():
     # Test the JAX environment wrapper
     env = SpacecraftEnvJax()
 
-    model_path = URANUS_MPC_PATH + '/models/'
-    
-    planet = Earth
-
-    if planet is Earth:
-        model_s, _ = load_model(filename=model_path + '/earth_b_4d.eqx') 
-    elif planet is Uranus:
-        model_s, _ = load_model(filename=model_path + '/uranus_b_4d.eqx')
-
-
-    spacecraft_dynamics = SpacecraftDynamics(mag_model=model_s,planet=planet)
-    dynamics_params = spacecraft_dynamics.dynamics_params
-    system = TrajectoryGenerator(dynamics=spacecraft_dynamics, dt=DT)
-
     # Make the env
     # Not changing defaults for now (don't really need to besides ep length)
     # env = SpacecraftEnv()
-    vec_env = DummyVecEnv([lambda: make_env(dynamics_params=dynamics_params, seed=None)])
+    vec_env = DummyVecEnv([lambda: make_env(dynamics_params=DYNAMICS_PARAMS, seed=None)])
     vec_env = VecNormalize.load(os.path.join(RL_SAVE_PATH, "vecnormalize_stats.pkl"), vec_env)
     vec_env.training = False
     vec_env.norm_reward = False
@@ -1070,7 +1077,7 @@ def test_jax_env():
 
 
     # Initialize controller
-    controller = DiffMPCController(network,HORIZON,DT,STATE_LIMITS_MRP,CONTROL_LIMITS)
+    controller = DiffMPCController(network,HORIZON,DT,STATE_LIMITS_MRP,CONTROL_LIMITS_TORQUE,DYNAMICS_PARAMS)
 
     # rl policy
     rl_path = os.path.join(RL_SAVE_PATH, "final_model.zip")
@@ -1146,8 +1153,8 @@ def test_jax_env():
 if __name__ == "__main__":
 
 
-    # main()
+    main()
 
-    test_jax_env()
+    # test_jax_env()
 
     # dry_test()

@@ -396,15 +396,26 @@ def generate_trajectory(env: SpacecraftEnvJax,
 
 @eqx.filter_jit
 def generate_n_trajectories(env: SpacecraftEnvJax,
-                                controller: DiffMPCController,
-                                expert_policy: Callable,
-                                key: jax.random.PRNGKey,
-                                beta: float,
-                                max_ep_steps: int,
-                                n_trajectories: int,
-                                replan_freq: int = 1):
+                            controller: DiffMPCController,
+                            expert_policy: Callable,
+                            key: jax.random.PRNGKey,
+                            beta: float,
+                            max_ep_steps: int,
+                            n_trajectories: int,
+                            replan_freq: int = 1):
 
-    return jax.vmap(generate_trajectory, in_axes=(None, None, None, 0, None, None, None))(env, controller, expert_policy, jax.random.split(key, n_trajectories), beta, max_ep_steps, replan_freq)
+    key, subkey = jax.random.split(key)
+    batched_keys = jax.random.split(subkey, n_trajectories)
+    trajectories, _ = jax.vmap(generate_trajectory, in_axes=(None, None, None, 0, None, None, None))(env, 
+                                                                                                     controller, 
+                                                                                                     expert_policy, 
+                                                                                                     batched_keys, 
+                                                                                                     beta, 
+                                                                                                     max_ep_steps, 
+                                                                                                     replan_freq)
+    # print(trajectories.shape)
+    # print(key.shape)
+    return trajectories, key
 
 
     
