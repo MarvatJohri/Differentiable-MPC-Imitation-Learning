@@ -660,6 +660,18 @@ def train_iteration(env: SpacecraftEnvJax,
     return controller, replay_buffer, opt_state, mean_loss, beta, key
 
 
+def evaluate(env: SpacecraftEnvJax,
+             controller: DiffMPCController, 
+             expert_policy: PPO,
+             max_steps: int,
+             num_episodes: int, 
+             key: jax.random.PRNGKey):
+
+    print("Evaluating Imitation Learning Agent")
+
+    
+
+
 
 def evaluate(controller: DiffMPCController, 
             max_steps: int,

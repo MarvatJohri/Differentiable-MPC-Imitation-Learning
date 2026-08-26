@@ -13,7 +13,6 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from quaternion_functions import q_left, q_conj, q_mul, skew, quaternion_projection, quaternion_jacobian
 from typing import Tuple, Callable
-from mj_utils import sample_initial_states
 import equinox as eqx
 from functools import partial
 from simulation_env_jax import SpacecraftEnvJax

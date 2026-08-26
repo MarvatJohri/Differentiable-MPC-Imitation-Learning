@@ -1,17 +1,32 @@
+import os
+import sys
+
 import jax
 # jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
-
 import numpy as np
 
-import gymnasium as gym
+import pandas as pd
+
 # from simulation_env_simpler import SpacecraftEnv
 
 from typing import Callable, Tuple, List, Dict
-from quaternion_functions import q_left, q_conj, get_rotation, q_to_mrp, skew, quaternion_projection, quaternion_jacobian
 from functools import partial
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pathlib import Path
+
 MAX_TORQUE = 5e-5
+
+
+DT = 0.1  
+THETA_THRESHOLD = 15
+OMEGA_THRESHOLD = 5
+THETA_TOL_STABILITY = 10
+OMEGA_TOL_STABILITY = 5
+
+
 
 @partial(jax.jit,static_argnums=(1, 2, 3, 4, 5, 6, 7, 8, 9))
 def network_output_to_QR(theta, nx, nu, decomposition_type='diagonal', 
@@ -125,55 +140,6 @@ def network_output_to_QR(theta, nx, nu, decomposition_type='diagonal',
 
 
 
-def sample_initial_states(batch_size, key, state_specs):
-
-    """
-    
-    Shamelessly copied from Patrick Schwartz
-    
-    """
-
-
-    """
-    Generates a batch of random initial states based on provided specs.
-
-    Args:
-        batch_size: Number of states to sample.
-        key: JAX key.
-        state_specs: List of dicts, e.g., 
-            [{'name': 'pos', 'shape': (3,), 'dist': 'uniform', 'min': -1, 'max': 1},
-             {'name': 'rot', 'shape': (4,), 'dist': 'quaternion'}]
-    """
-    states = []
-    
-    for spec in state_specs:
-        key, subkey = jax.random.split(key)
-        dist_type = spec.get('dist', 'uniform')
-        shape = (batch_size,) + spec.get('shape', (1,))
-
-        if dist_type == 'uniform':
-            val = jax.random.uniform(subkey, shape=shape, 
-                                 minval=spec['min'], maxval=spec['max'],
-                                 dtype=jnp.float64)
-        
-        elif dist_type == 'normal':
-            val = spec.get('mean', 0.0) + spec.get('std', 1.0) * jax.random.normal(subkey, shape=shape, dtype=jnp.float64)
-
-        elif dist_type == 'quaternion':
-            # Specialized sampler for unit quaternions
-            q = jax.random.normal(subkey, shape=shape, dtype=jnp.float64)
-            val = q / jnp.linalg.norm(q, axis=-1, keepdims=True)
-
-        elif dist_type == 'constant':
-            return jnp.broadcast_to(jnp.array(spec['value'], jnp.float64), shape)
-
-        states.append(val.reshape(batch_size, -1))
-        #TODO: Potentially set trajectory up as pytrees (traj.pos instead of traj[:,0:3])
-    return jnp.concatenate(states, axis=-1, dtype=jnp.float64)
-
-
-
-
 def sample_state(batch_size, key, omega_min=0.0, omega_max=0.0):
 
     """
@@ -202,5 +168,215 @@ def sample_state(batch_size, key, omega_min=0.0, omega_max=0.0):
     return jnp.concatenate([q, omega], axis=-1)
 
 
+def make_dummy_expert(action_dim):
+
+    def dummy_expert(obs):
+        return jnp.zeros((action_dim,), dtype=jnp.float64)
+
+    return dummy_expert
+
+def make_dummy_controller(state_dim, action_dim):
+    def dummy_controller(obs, goal, nom_traj, nom_cntrl):
+        return jnp.zeros((action_dim,), dtype=jnp.float64), nom_traj, nom_cntrl
+    return dummy_controller
 
 # def save_data_to_df(trajectories, filepath, labels, dt)
+
+
+def compute_metrics(trajectories: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray], 
+                    dt=DT, 
+                    angle_threshold=THETA_THRESHOLD,
+                    omega_threshold=OMEGA_THRESHOLD,
+                    angle_tol_stability=THETA_TOL_STABILITY,
+                    omega_tol_stability=OMEGA_TOL_STABILITY,
+                    tail_length=50,
+                    label='Default', 
+                    metadata=None):
+
+
+    # Create directory if it doesn't exist
+    # os.makedirs(save_dir, exist_ok=True)
+
+    # obs/actions are of form (n_trajs, T, dim)
+    observations, _, __, ___, ____ = trajectories
+
+    n_trajs = observations.shape[0]
+    T = observations.shape[1]
+    nx = observations.shape[2]
+
+    q_err = observations[:, :, :4]  
+    w_err = observations[:, :, 4:7]  
+
+    q_err_scalar = q_err[:, :, 0]
+    angle_errs = 2 * jnp.arccos(jnp.clip(jnp.abs(q_err_scalar), 0, 1)) * 180 / jnp.pi # Converted to degrees
+
+    omega_err_norm = jnp.linalg.norm(w_err, axis=-1) * 180 / jnp.pi
+
+
+    final_angle_errs = jnp.mean(angle_errs[:, -tail_length:], axis=1)
+    final_omega_errs = jnp.mean(omega_err_norm[:, -tail_length:], axis=1)
+
+
+    # Apply stability condition
+    # Tail should have angle maintained b/w angle_tol_stability and omega_tol_stability
+
+    # 3. Condition: Is the distance from the *average* final value within the neighborhood?
+    cond = ((jnp.abs(angle_errs - final_angle_errs[:, None]) < angle_tol_stability) &
+            (jnp.abs(omega_err_norm - final_omega_errs[:, None]) < omega_tol_stability))
+
+    # 4. Backward accumulation to find where it *stays* within the neighborhood
+    mask = jnp.logical_and.accumulate(cond[:, ::-1], axis=1)[:, ::-1]
+
+    # 5. Calculate indices and stability checks
+    stability_idx = jnp.argmax(mask, axis=1)
+    ever_stable = jnp.sum(mask, axis=1) >= tail_length
+    
+    slew_time = jnp.where(ever_stable, stability_idx * dt, jnp.nan)
+    
+    # Metrics
+    stable_trajs = ~jnp.isnan(slew_time)
+    successful = stable_trajs & (final_angle_errs < angle_threshold) & (final_omega_errs < omega_threshold)
+    
+    metrics_df = pd.DataFrame([{
+        'Group': label,
+        'Success Rate (%)': float(jnp.mean(successful) * 100),
+        'Stable Rate (%)': float(jnp.mean(stable_trajs) * 100),
+        'Mean Angle Error (deg)': float(jnp.mean(final_angle_errs)),
+        'Mean Omega Error (deg/s)': float(jnp.mean(final_omega_errs)),
+        'Mean Slew Time (s)': float(jnp.nanmean(slew_time)),
+        'N Trajectories': int(n_trajs),
+    }])
+    
+    return metrics_df
+
+
+def compute_metrics_multi(trajectories_list, labels, **kwargs):
+    """
+    Compute metrics for multiple trajectory sets.
+    
+    Parameters:
+    -----------
+    trajectories_list : list of tuples
+        List of outputs from generate_n_trajectories
+    labels : list of str
+        Label for each trajectory set
+    **kwargs : 
+        Passed to compute_metrics (dt, thresholds, etc.)
+    
+    Returns:
+    --------
+    metrics_df : pd.DataFrame
+    """
+    dfs = [compute_metrics(traj, label=lbl, **kwargs) 
+           for traj, lbl in zip(trajectories_list, labels)]
+    return pd.concat(dfs, ignore_index=True)
+
+
+def plot_metrics_bar(metrics_df, title=None, filename=None, figsize=(8, 5)):
+    """Create bar plots for all metrics."""
+    
+    metrics_config = [
+        ('Success Rate (%)', (0, 100), 'steelblue'),
+        ('Stable Rate (%)', (0, 100), 'seagreen'),
+        ('Mean Angle Error (deg)', None, 'coral'),
+        ('Mean Omega Error (deg/s)', None, 'mediumpurple'),
+        ('Mean Slew Time (s)', None, 'goldenrod'),
+    ]
+    
+    n_groups = len(metrics_df)
+    
+    for col, ylim, color in metrics_config:
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        if n_groups > 1:
+            sns.barplot(data=metrics_df, x='Group', y=col, ax=ax, color=color)
+        else:
+            ax.bar(0, metrics_df[col].iloc[0], color=color, width=0.4)
+            ax.set_xticks([0])
+            ax.set_xticklabels([metrics_df['Group'].iloc[0]])
+        
+        # Value labels on bars
+        for i, val in enumerate(metrics_df[col]):
+            if not np.isnan(val):
+                ax.annotate(f'{val:.1f}', xy=(i, val), ha='center', va='bottom', fontweight='bold')
+        
+        ax.set_ylabel(col)
+        ax.set_xlabel('')
+        ax.set_ylim(ylim if ylim else (0, None))
+        ax.grid(axis='y', linestyle='--', alpha=0.4)
+        sns.despine(ax=ax)
+        
+        if title:
+            ax.set_title(title)
+        
+        plt.tight_layout()
+        
+        if filename:
+            Path('figures').mkdir(exist_ok=True)
+            suffix = col.replace(' ', '_').replace('(%)', 'pct').replace('(', '').replace(')', '').replace('/', '_')
+            plt.savefig(f"figures/{filename}_{suffix}.png", dpi=150, bbox_inches='tight')
+        
+        plt.show()
+
+
+def plot_metrics_comparison(metrics_list, agent_labels, title=None, filename=None, figsize=(10, 5)):
+    """
+    Compare metrics across multiple agents.
+    
+    Parameters:
+    -----------
+    metrics_list : list of pd.DataFrame
+        List of metrics DataFrames (from compute_metrics or compute_metrics_multi)
+    agent_labels : list of str
+        Label for each agent
+    """
+    combined = pd.concat([
+        df.assign(Agent=label) for df, label in zip(metrics_list, agent_labels)
+    ], ignore_index=True)
+    
+    metrics_config = [
+        ('Success Rate (%)', (0, 100)),
+        ('Stable Rate (%)', (0, 100)),
+        ('Mean Angle Error (deg)', None),
+        ('Mean Omega Error (deg/s)', None),
+        ('Mean Slew Time (s)', None),
+    ]
+    
+    n_groups = combined['Group'].nunique()
+    
+    for col, ylim in metrics_config:
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        if n_groups > 1:
+            sns.barplot(data=combined, x='Group', y=col, hue='Agent', ax=ax)
+            ax.legend(title='')
+        else:
+            sns.barplot(data=combined, x='Agent', y=col, ax=ax, palette='deep')
+        
+        ax.set_ylabel(col)
+        ax.set_xlabel('')
+        ax.set_ylim(ylim if ylim else (0, None))
+        ax.grid(axis='y', linestyle='--', alpha=0.4)
+        sns.despine(ax=ax)
+        
+        if title:
+            ax.set_title(title)
+        
+        plt.tight_layout()
+        
+        if filename:
+            Path('figures').mkdir(exist_ok=True)
+            suffix = col.replace(' ', '_').replace('(%)', 'pct').replace('(', '').replace(')', '').replace('/', '_')
+            plt.savefig(f"figures/{filename}_{suffix}.png", dpi=150, bbox_inches='tight')
+        
+        plt.show()
+
+
+def print_metrics(metrics_df, title=None):
+    """Print formatted metrics table."""
+    if title:
+        print(f"\n{'='*70}")
+        print(f" {title}")
+        print('='*70)
+    print(metrics_df.to_string(index=False, float_format='{:.2f}'.format))
+    print()
