@@ -274,6 +274,11 @@ class SpacecraftEnvJax(eqx.Module):
         step_key, noise_key = jax.random.split(step_key)
 
         new_state = self.rk4_step(state, action, noise_key)
+        # Handle wrap around for quaternion 
+        # if new_state[0] < 0:
+        #     new_state = new_state.at[:4].set(-new_state[:4])
+
+        new_state = jax.lax.cond(new_state[0] < 0, lambda x: x.at[:4].set(-x[:4]), lambda x: x, new_state)
 
         obs = self._get_obs(new_state, goal_state)
 
@@ -298,7 +303,10 @@ def generate_trajectory(env: SpacecraftEnvJax,
                         key: jax.random.PRNGKey, 
                         beta: float,
                         max_ep_steps: int,
-                        replan_freq: int = 1) -> Dict[str, jnp.ndarray]:
+                        replan_freq: int = 1,
+                        horizon: int = 10,
+                        nx: int = 7,
+                        nu: int = 3) -> Dict[str, jnp.ndarray]:
 
 
     max_torque = env.max_torque
@@ -364,8 +372,8 @@ def generate_trajectory(env: SpacecraftEnvJax,
 
     # Generate initial nominal trajectories
     key, subkey = jax.random.split(key)
-    nominal_traj = jnp.tile(init_env_state.state, (controller.horizon + 1, 1))
-    nominal_cntrl = 1e-3 * jax.random.normal(subkey, shape=(controller.horizon, controller.nu), dtype=jnp.float64)
+    nominal_traj = jnp.tile(init_env_state.state, (horizon + 1, 1))
+    nominal_cntrl = 1e-3 * jax.random.normal(subkey, shape=(horizon, nu), dtype=jnp.float64)
 
     init_carry = (init_env_state, init_obs, 0, nominal_traj, nominal_cntrl, key)
 

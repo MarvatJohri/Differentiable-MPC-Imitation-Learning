@@ -214,6 +214,11 @@ class DiffMPCController(eqx.Module):
         def scan_step(state, control: jnp.ndarray):
             u_noise = jnp.zeros(control.shape)  # No noise for nominal trajectory
             next_state = self.rk4_step_nominal(state, control, u_noise, dt)
+            # Handle wrap around for quaternion normalization
+            # if next_state[0] < 0:
+            #     next_state = next_state.at[:4].set(-next_state[:4])
+
+            next_state = jax.lax.cond(next_state[0] < 0, lambda x: x.at[:4].set(-x[:4]), lambda x: x, next_state)
             return next_state, state
 
         final_state, trajectory = jax.lax.scan(scan_step, initial_state, control_sequence)

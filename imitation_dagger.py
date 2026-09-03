@@ -69,7 +69,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecNormalize
 
 from simulation_env_simpler import SpacecraftEnv
 from replay_buffer import ReplayBuffer, init_buffer, add_trajectories_to_buffer, sample_from_buffer, can_sample_buffer
-from mj_utils import network_output_to_QR
+from mj_utils import make_dummy_controller, make_dummy_expert, compute_metrics, plot_metrics_bar, print_metrics, compute_metrics_multi, plot_metrics_comparison
 # from propagate_functions import sample_episode_context, generate_trajectory
 from diffmpc_controller import DiffMPCController, FeedForwardNetwork, build_mpc_solver
 from simulation_env_jax import SpacecraftEnvJax, generate_trajectory, generate_n_trajectories
@@ -127,7 +127,7 @@ BATCH_SIZE = 512
 BETA_DECAY = 0.95                       # Beta decay for DAgger
 NUM_EPS_STORED = 100
 MAX_BUFFER_SIZE = MAX_EPISODE_LENGTH * NUM_EPS_STORED                # Replay buffer size
-NUM_ITERATIONS = 50
+NUM_ITERATIONS = 100
 NUM_TRAJECTORIES = 10
 NUM_GRADIENT_STEPS = 100
 
@@ -145,13 +145,13 @@ HORIZON = 10
 LOG_EVERY = 1
 CHECKPOINT_FREQUENCY = 10
 
-EVAL_FREQUENCY = 5
+EVAL_FREQUENCY = 20
 NUM_EVAL_EPS = 10
 
 
 
 # RNG Seed
-SEED = 100
+SEED = 42
 
 
 
@@ -1030,8 +1030,29 @@ def dry_test():
 
     # Some test code to check how the model works with no training
 
-    # Make env
-    env = SpacecraftEnv()
+    # Make the env
+    env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMS,
+                            dt=DT,
+                            max_env_steps=MAX_EPISODE_LENGTH,
+                            state_limits=STATE_LIMITS,
+                            control_limits=CONTROL_LIMITS,
+                            max_torque=MAX_TORQUE,
+                            dyn_noise_std=DYN_NOISE_STD,
+                            theta_threshold=THETA_THRESHOLD,
+                            omega_threshold=OMEGA_THRESHOLD,
+                            theta_threshold_reward=THETA_THRESHOLD_REWARD,
+                            omega_penalty=OMEGA_PENALTY,
+                            action_penalty=ACTION_PENALTY,
+                            goal_reward=GOAL_REWARD)
+
+
+
+    # Not changing defaults for now (don't really need to besides ep length)
+    # env = SpacecraftEnv()
+    dummy_vec_env = DummyVecEnv([lambda: make_env(dynamics_params=DYNAMICS_PARAMS, seed=None)])
+    dummy_vec_env = VecNormalize.load(os.path.join(RL_SAVE_PATH, "vecnormalize_stats.pkl"), dummy_vec_env)
+    dummy_vec_env.training = False
+    dummy_vec_env.norm_reward = False
     
 
     # Initialize model
@@ -1054,8 +1075,56 @@ def dry_test():
                                     control_limits=CONTROL_LIMITS_TORQUE,
                                     dynamics_params=DYNAMICS_PARAMS)
 
+    # Get expert policy
+    rl_path = os.path.join(RL_SAVE_PATH, "final_model.zip")
+    rl_model = PPO.load(rl_path, env=dummy_vec_env)
+    expert_policy = get_expert_policy(rl_model, dummy_vec_env)
 
-    evaluate(controller, max_steps = env.num_steps, num_episodes=10, key=key)
+
+    # evaluate(controller, max_steps = env.num_steps, num_episodes=10, key=key)
+
+    dummy_expert = make_dummy_expert(action_dim=3)
+    dummy_controller = make_dummy_controller(state_dim=7, action_dim=3)
+
+    # Generate 10 trajs using controller and dummy expert
+    controller_trajectories, keys = generate_n_trajectories(env=env,
+                                                            controller=controller,
+                                                            expert_policy=dummy_expert,
+                                                            key=key,
+                                                            beta=0,
+                                                            max_ep_steps=MAX_EPISODE_LENGTH,
+                                                            n_trajectories=10)
+
+    # Generate 10 trajs using controller and rl expert
+    rl_trajectories, keys = generate_n_trajectories(env=env,
+                                                    controller=dummy_controller,
+                                                    expert_policy=expert_policy,
+                                                    key=key,
+                                                    beta=1,
+                                                    max_ep_steps=MAX_EPISODE_LENGTH,
+                                                    n_trajectories=10)
+
+    # compute metrics
+
+
+    controller_df = compute_metrics(controller_trajectories)
+    rl_df = compute_metrics(rl_trajectories)
+
+    print_metrics(controller_df, "Controller with Dummy Expert")
+    print_metrics(rl_df, "Controller with RL Expert")
+
+    # Plot stuff
+    # plot_metrics_bar(controller_df, "Controller with Dummy Expert","dummy_model")
+    # plot_metrics_bar(rl_df, "Controller with RL Expert", "rl_model")
+
+    trajs = [controller_trajectories, rl_trajectories]
+    labels = ["Controller with Dummy Expert", "Controller with RL Expert"]
+
+    # df = compute_metrics_multi(trajs, labels)
+
+    dfs = [controller_df, rl_df]
+
+    plot_metrics_comparison(dfs, labels, "Comparison of Controller with Dummy Expert and RL Expert", "comparison_plot")
 
 
 
@@ -1101,7 +1170,7 @@ def test_jax_env():
                                           controller=controller,
                                           expert_policy=expert_policy,
                                           key=key,
-                                          beta=0.5,
+                                          beta=0,
                                           max_ep_steps=MAX_EPISODE_LENGTH)
     end = time.time()
 
@@ -1112,7 +1181,7 @@ def test_jax_env():
                                             controller=controller,
                                             expert_policy=expert_policy,
                                             key=key,
-                                            beta=0.5,
+                                            beta=0,
                                             max_ep_steps=MAX_EPISODE_LENGTH)
     end = time.time()
     print("Time take for generating one trajectory AFTER jit compiling: ", end-start)
@@ -1123,28 +1192,28 @@ def test_jax_env():
                                                     controller=controller,
                                                     expert_policy=expert_policy,
                                                     key=key,
-                                                    beta=0.5,
+                                                    beta=1.0,
                                                     max_ep_steps=MAX_EPISODE_LENGTH,
-                                                    n_trajectories=10)
+                                                    n_trajectories=100)
     end = time.time()
     print("Time take for generating 10 trajectories AFTER jit compiling using vmap: ", end-start)
 
 
     start = time.time()
-    key = keys[0]
+    # key = keys[0]
     trajectories, keys = generate_n_trajectories(env=env,
                                                     controller=controller,
                                                     expert_policy=expert_policy,
                                                     key=key,
-                                                    beta=0.5,
+                                                    beta=1.0,
                                                     max_ep_steps=MAX_EPISODE_LENGTH,
-                                                    n_trajectories=10)
+                                                    n_trajectories=100)
     end = time.time()
     print("Time take for generating 10 trajectories AFTER jit compiling using vmap AFTER vmap jit compiles: ", end-start)
 
 
     # Also test collecting trajectories for training
-    key = keys[0]
+    # key = keys[0]
     start = time.time()
     trajectories, key = collect_trajectory(env=vec_env,
                                             expert_policy=rl_model,
@@ -1165,8 +1234,8 @@ def test_jax_env():
 if __name__ == "__main__":
 
 
-    main()
+    # main()
 
-    # test_jax_env()
+    test_jax_env()
 
     # dry_test()

@@ -23,7 +23,7 @@ MAX_TORQUE = 5e-5
 DT = 0.1  
 THETA_THRESHOLD = 15
 OMEGA_THRESHOLD = 5
-THETA_TOL_STABILITY = 10
+THETA_TOL_STABILITY = 5
 OMEGA_TOL_STABILITY = 5
 
 
@@ -189,7 +189,7 @@ def compute_metrics(trajectories: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, j
                     omega_threshold=OMEGA_THRESHOLD,
                     angle_tol_stability=THETA_TOL_STABILITY,
                     omega_tol_stability=OMEGA_TOL_STABILITY,
-                    tail_length=50,
+                    tail_length=100,
                     label='Default', 
                     metadata=None):
 
@@ -250,7 +250,7 @@ def compute_metrics(trajectories: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, j
     return metrics_df
 
 
-def compute_metrics_multi(trajectories_list, labels, **kwargs):
+def compute_metrics_multi(trajectories_list, labels, **kwargs)-> pd.DataFrame:
     """
     Compute metrics for multiple trajectory sets.
     
@@ -312,6 +312,7 @@ def plot_metrics_bar(metrics_df, title=None, filename=None, figsize=(8, 5)):
         plt.tight_layout()
         
         if filename:
+            print("./Saving figure...")
             Path('figures').mkdir(exist_ok=True)
             suffix = col.replace(' ', '_').replace('(%)', 'pct').replace('(', '').replace(')', '').replace('/', '_')
             plt.savefig(f"figures/{filename}_{suffix}.png", dpi=150, bbox_inches='tight')

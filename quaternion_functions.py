@@ -88,7 +88,7 @@ def quaternion_projection(state: jnp.ndarray) -> jnp.ndarray:
     q = state[:4]
     q_normalized = q / jnp.linalg.norm(q)
     # Add failsafe for sign ambiguity (flip sign if scalar part is negative)
-    q_normalized = jnp.where(q_normalized[0] < 0, -q_normalized, q_normalized)
+    # q_normalized = jnp.where(q_normalized[0] < 0, -q_normalized, q_normalized)
     return jnp.concatenate([q_normalized, state[4:]])
 
 

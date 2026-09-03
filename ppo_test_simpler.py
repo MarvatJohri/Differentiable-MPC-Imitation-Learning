@@ -174,11 +174,13 @@ def evaluate_model(env: VecNormalize, model, num_episodes=100, seed=0):
             step_rewards[ep, step] = reward
             cumulative_rewards[ep, step] = ep_reward
 
+            # if terminated or truncated:
+            #     trajectories[ep, step + 2:, :] = trajectories[ep, step + 1, :]
+            #     step_actions[ep, step + 1:, :] = np.nan
+            #     step_rewards[ep, step + 1:] = np.nan
+            #     cumulative_rewards[ep, step + 1:] = ep_reward
+            #     break
             if terminated or truncated:
-                trajectories[ep, step + 2:, :] = trajectories[ep, step + 1, :]
-                step_actions[ep, step + 1:, :] = np.nan
-                step_rewards[ep, step + 1:] = np.nan
-                cumulative_rewards[ep, step + 1:] = ep_reward
                 break
 
         step_rewards[ep] = ep_reward
