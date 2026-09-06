@@ -34,25 +34,25 @@ ROOT = HERE.parent
 BASE_SAVE_PATH = str(HERE / "results")
 BASE_LOG_PATH = str(HERE / "logs")
 
-URANUS_MPC_PATH = str((ROOT / "uranus-mpc").resolve())
+# URANUS_MPC_PATH = str((ROOT / "uranus-mpc").resolve())
 
 
-sys.path.insert(0, str((ROOT / "uranus-mpc").resolve()))
-sys.path.insert(0, str((ROOT / "uranus-mpc" / "utils").resolve()))
+# sys.path.insert(0, str((ROOT / "uranus-mpc").resolve()))
+# sys.path.insert(0, str((ROOT / "uranus-mpc" / "utils").resolve()))
 
 # Your environment imports - adjust as needed
-from dynamics.base_dynamics import Dynamics
-from dynamics.spacecraft_dynamics import SpacecraftDynamics
-from dynamics.orbit_dynamics import OrbitDynamics
-from simulation_env_simpler import SpacecraftEnv
-from dynamics.planetary_params import Earth, Uranus
-from utils.propagate import TrajectoryGenerator
+# from dynamics.base_dynamics import Dynamics
+# from dynamics.spacecraft_dynamics import SpacecraftDynamics
+# from dynamics.orbit_dynamics import OrbitDynamics
+# from simulation_env_simpler import SpacecraftEnv
+# from dynamics.planetary_params import Earth, Uranus
+# from utils.propagate import TrajectoryGenerator
 
-from utils.learning import load_model
+# from utils.learning import load_model
 
 
 # Experiment identification
-EXPERIMENT_NAME = "spacecraft_ppo_v1_torque_only"
+EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
 EXPERIMENT_NOTES = "Initial PPO training on Earth orbit"
 
 DYNAMICS_PARAMETERS = {
