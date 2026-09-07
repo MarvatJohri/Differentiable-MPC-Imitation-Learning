@@ -34,13 +34,13 @@ IL_BASE_SAVE_PATH = str(HERE / "imitation_results")
 os.makedirs(IL_BASE_SAVE_PATH, exist_ok=True)
 # os.makedirs(IL_BASE_LOG_PATH, exist_ok=True)
 
-URANUS_MPC_PATH = str((ROOT / "uranus-mpc").resolve())
-sys.path.append(URANUS_MPC_PATH)
+# URANUS_MPC_PATH = str((ROOT / "uranus-mpc").resolve())
+# sys.path.append(URANUS_MPC_PATH)
 
-from utils.propagate import TrajectoryGenerator
-from dynamics.spacecraft_dynamics import SpacecraftDynamics
-from dynamics.planetary_params import Earth, Uranus
-from utils.learning import load_model
+# from utils.propagate import TrajectoryGenerator
+# from dynamics.spacecraft_dynamics import SpacecraftDynamics
+# from dynamics.planetary_params import Earth, Uranus
+# from utils.learning import load_model
 
 
 
@@ -162,6 +162,8 @@ SEED = 42
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 RL_SAVE_PATH = os.path.join(RL_BASE_SAVE_PATH, RL_EXPERIMENT_NAME)
 SAVE_PATH = os.path.join(IL_BASE_SAVE_PATH, EXPERIMENT_NAME)
+FIGURES_PATH = os.path.join(SAVE_PATH, "figures")
+os.makedirs(FIGURES_PATH, exist_ok=True)
 # LOG_PATH = os.path.join(SAVE_PATH, "logs")
 LOG_FILENAME = os.path.join(SAVE_PATH,"logs")
 CHECKPOINT_PATH = os.path.join(SAVE_PATH, "checkpoints")
@@ -386,121 +388,6 @@ def save_il_model(controller: DiffMPCController,
 
 
 
-def collect_trajectory(env: VecNormalize,
-                       expert_policy: PPO,
-                       controller: DiffMPCController,
-                       max_episode_length: int,
-                       beta:float,
-                       key: jax.random.PRNGKey) -> Tuple[Dict[str, jnp.ndarray], jax.random.PRNGKey]:
-
-
-
-    raw_env = env.envs[0].unwrapped
-
-    key, subkey = jax.random.split(key)
-    seed = int(jax.random.randint(subkey, shape=(), minval=0, maxval=2**32 - 1))
-    raw_obs, info = raw_env.reset(seed=seed)
-
-    initial_state = info["initial_state"]
-    goal_state = info["goal_state"]
-
-    key, subkey = jax.random.split(key)
-    nominal_traj = jnp.tile(initial_state,(controller.horizon+1,1))
-    nominal_cntrl = 0.001*jax.random.normal(subkey, shape=((controller.horizon, controller.nu)))
-
-    obs_list = []
-    expert_action_list = []
-    nominal_traj_list = []
-    nominal_cntrl_list = []
-
-    for _ in range(max_episode_length):
-
-
-        normalized_obs = env.normalize_obs(raw_obs)
-        expert_action, _ = expert_policy.predict(normalized_obs, deterministic=True)
-
-        controller_action, controller_nominal_traj, controller_nominal_cntrl = controller(jnp.array(raw_obs), 
-                                                                                          jnp.array(goal_state), 
-                                                                                          nominal_traj, 
-                                                                                          nominal_cntrl)
-
-        obs_list.append(jnp.array(raw_obs))
-        expert_action_list.append(jnp.array(expert_action))
-        nominal_traj_list.append(nominal_traj)
-        nominal_cntrl_list.append(nominal_cntrl)
-        
-
-        key, subkey = jax.random.split(key)
-        if float(jax.random.uniform(subkey)) < beta:
-            executed_action = expert_action
-
-            # Three options when it comes to updating nominals 
-            # for DAgger as I see it
-            # Option 1: Let MPC make a plan and store that as part of augmented dataset
-            # Option 2: Let expert make a plan and store that as part of augmented dataset
-            # Option 3: Don't make a plan at each timestep and use previous MPC calls for replanning
-
-            # Looking at Patrick's code, he doesn't replan unless he is required to
-            # That is most similar to option 3
-
-            # That said, Patrick's code assumes that the controller
-            # policy is actually being run
-            # that is not true in our case
-            
-            # For option 1, below use controller_nominal_traj and controller_nominal_cntrl
-            # For option 2 we need to call expert policy to make a plan
-
-            # Option 3
-            nominal_traj = jnp.concatenate((nominal_traj[1:],jnp.expand_dims(nominal_traj[-1],axis=0)),axis=0)
-            nominal_cntrl = jnp.concatenate((nominal_cntrl[1:],jnp.expand_dims(nominal_cntrl[-1],axis=0)),axis=0)
-
-            # # Option 2
-            # nominal_traj = controller_nominal_traj
-            # nominal_cntrl = controller_nominal_cntrl
-
-        else:
-            executed_action = np.array(controller_action) / MAX_TORQUE  # Scale action to [-1, 1] range for env
-            # Check if executed action is within control limits
-            control_limits = jnp.array([[-1, 1]] * 3, dtype=jnp.float64)
-            # if not jnp.all((executed_action >= control_limits[:, 0]) & (executed_action <= control_limits[:, 1])):
-            #     raise ValueError(f"Executed action {executed_action} is out of control limits {control_limits}")
-            nominal_traj = controller_nominal_traj
-            nominal_cntrl = controller_nominal_cntrl
-
-        
-
-        # Step env
-        raw_obs, reward, done, truncated, info = raw_env.step(executed_action)
-
-    trajectory = {
-        "obs": jnp.array(obs_list),
-        "goal_state": jnp.array(goal_state),
-        "expert_actions": jnp.array(expert_action_list),
-        "nominal_traj": jnp.array(nominal_traj_list),
-        "nominal_cntrl": jnp.array(nominal_cntrl_list),
-    }
-
-    return trajectory, key
-
-
-def collect_trajectories(env: VecNormalize,
-                        expert_policy: Callable,
-                        controller: DiffMPCController,
-                        num_trajectories: int,
-                        max_episode_length: int,
-                        beta: float,
-                        key: jax.random.PRNGKey) -> Tuple[List[Dict[str, jnp.ndarray]], jax.random.PRNGKey]:
-
-    trajectories = []
-    for _ in range(num_trajectories):
-        trajectory, key = collect_trajectory(env, expert_policy, controller, max_episode_length, beta, key)
-        trajectories.append(trajectory)
-
-    return trajectories, key
-
-
-
-
 def loss_fn(controller: DiffMPCController,
             data_batch: Dict[str, jnp.ndarray]) -> jnp.ndarray:
     
@@ -680,87 +567,35 @@ def evaluate(controller: DiffMPCController,
 
     print("Evaluating Imitation Learning Agent")
 
-    # Load learned magnetic field models
-    PLANET = Earth
-    model_path = URANUS_MPC_PATH + '/models/'
-    if PLANET is Earth:
-        model_s, _ = load_model(filename=model_path + '/earth_b_4d.eqx') 
-    elif PLANET is Uranus:
-        model_s, _ = load_model(filename=model_path + '/uranus_b_4d.eqx')
-    else:
-        raise ValueError("PLANET should be either Earth or Uranus")
 
+    # Evaluate using the gen trajectories function
 
-    spacecraft_dynamics = SpacecraftDynamics(mag_model=model_s,planet=PLANET)
-    dynamics_params = spacecraft_dynamics.dynamics_params
-    system = TrajectoryGenerator(dynamics=spacecraft_dynamics, dt=DT)
+    dummy_expert = make_dummy_expert(action_dim=3)
 
+    # Make env
+    env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMS,
+                            dt=DT,
+                            max_env_steps=max_steps,
+                            state_limits=STATE_LIMITS,
+                            control_limits=CONTROL_LIMITS,
+                            max_torque=MAX_TORQUE,
+                            dyn_noise_std=DYN_NOISE_STD,
+                            theta_threshold=THETA_THRESHOLD,
+                            omega_threshold=OMEGA_THRESHOLD,
+                            theta_threshold_reward=THETA_THRESHOLD_REWARD,
+                            omega_penalty=OMEGA_PENALTY,
+                            action_penalty=ACTION_PENALTY,
+                            goal_reward=GOAL_REWARD)
 
-    trajectories = jnp.zeros((num_episodes, max_steps+1, 7))
-    target_states = jnp.zeros((num_episodes, 7))
-    step_actions = jnp.zeros((num_episodes, max_steps, 3))  # Store actions for each episode
-
+    # Generate 100 trajectories using controller and dummy expert
     start_time = time.time()
-
-    for ep in range(num_episodes):
-        ep_start_time = time.time()
-
-        # print("Episode Number: ",ep)
-        key, init_key, traj_key = jax.random.split(key,3)
-        # Sample initial state and target state for the episode
-        initial_state, target_state = sample_episode_context(init_key)
-        # print("Initial State: ", initial_state)
-        # print("Target State: ", target_state)
-
-        # Generate a trajectory
-        trajectory, controls = generate_trajectory(initial_state, 
-                                         target_state, 
-                                         controller.dt, 
-                                         traj_key, 
-                                         max_steps,
-                                         controller)
-
-        # print("Trajectory: ", trajectory)
-
-        trajectories = trajectories.at[ep].set(trajectory)
-        target_states = target_states.at[ep].set(target_state)
-        step_actions = step_actions.at[ep].set(controls)
-
-
-        traj_nans = jnp.isnan(trajectories).any()
-        traj_infs = jnp.isinf(trajectories).any()
-        cntrl_nans = jnp.isnan(controls).any()
-        cntrl_infs = jnp.isinf(controls).any()
-
-        has_issues = traj_nans or traj_infs or cntrl_nans or cntrl_infs
-
-        if has_issues:
-            prefix = f"Episode {ep}: " if ep is not None else ""
-
-        if traj_nans:
-            nan_count = jnp.isnan(trajectories).sum()
-            nan_locations = jnp.where(jnp.isnan(trajectories).any(axis=-1))
-            first_nan_step = nan_locations[0][0] if len(nan_locations[0]) > 0 else "N/A"
-            print(f"{prefix}Trajectory has {nan_count} NaN values! First NaN at step {first_nan_step}")
-            
-        if traj_infs:
-            inf_count = jnp.isinf(trajectories).sum()
-            print(f"{prefix}Trajectory has {inf_count} Inf values!")
-            
-        if cntrl_nans:
-            nan_count = jnp.isnan(controls).sum()
-            nan_locations = jnp.where(jnp.isnan(controls).any(axis=-1))
-            first_nan_step = nan_locations[0][0] if len(nan_locations[0]) > 0 else "N/A"
-            print(f"{prefix}Controls have {nan_count} NaN values! First NaN at step {first_nan_step}")
-            
-        if cntrl_infs:
-            inf_count = jnp.isinf(controls).sum()
-            print(f"{prefix}Controls have {inf_count} Inf values!")
-
-
-        ep_end_time = time.time()
-
-        # print("Time taken: ",ep_end_time - ep_start_time)
+    trajectories, key = generate_n_trajectories(env=env,
+                                                controller=controller,
+                                                expert_policy=dummy_expert,
+                                                key=key,
+                                                beta=0,
+                                                max_ep_steps=max_steps,
+                                                n_trajectories=num_episodes)
 
     print("Evaluation Done")
     print("Time taken: ",time.time() - start_time)
@@ -777,11 +612,21 @@ def evaluate(controller: DiffMPCController,
     angle_hist_max = 30
     omega_hist_max = 15
 
-    _ = system.plot_costs(trajectories, target_states, plot_stats=True)
+    # _ = system.plot_costs(trajectories, target_states, plot_stats=True)
 
-    system.plot_violin_and_bar(trajectories, target_states, angle_threshold=angle_threshold, omega_threshold=omega_threshold,angle_stability_tol=angle_tol, omega_stability_tol=omega_tol, tail_length=tail_length, verbose=True)
+    # system.plot_violin_and_bar(trajectories, target_states, angle_threshold=angle_threshold, omega_threshold=omega_threshold,angle_stability_tol=angle_tol, omega_stability_tol=omega_tol, tail_length=tail_length, verbose=True)
 
 
+    # compute metrics
+    df = compute_metrics(trajectories,
+                         dt=DT,
+                         angle_threshold=angle_threshold,
+                         omega_threshold=omega_threshold,
+                         angle_tol_stability=angle_tol,
+                         omega_tol_stability=omega_tol,
+                         tail_length=tail_length)
+
+    print_metrics(df, "Evaluation Metrics")
 
 
 
@@ -1075,6 +920,13 @@ def dry_test():
                                     control_limits=CONTROL_LIMITS_TORQUE,
                                     dynamics_params=DYNAMICS_PARAMS)
 
+
+    # Test evaluate function
+
+    print("Testing evaluate function with dummy expert and controller")
+
+    # evaluate(controller, max_steps=MAX_EPISODE_LENGTH, num_episodes=10, key=key)
+
     # Get expert policy
     rl_path = os.path.join(RL_SAVE_PATH, "final_model.zip")
     rl_model = PPO.load(rl_path, env=dummy_vec_env)
@@ -1093,7 +945,7 @@ def dry_test():
                                                             key=key,
                                                             beta=0,
                                                             max_ep_steps=MAX_EPISODE_LENGTH,
-                                                            n_trajectories=10)
+                                                            n_trajectories=100)
 
     # Generate 10 trajs using controller and rl expert
     rl_trajectories, keys = generate_n_trajectories(env=env,
@@ -1102,7 +954,7 @@ def dry_test():
                                                     key=key,
                                                     beta=1,
                                                     max_ep_steps=MAX_EPISODE_LENGTH,
-                                                    n_trajectories=10)
+                                                    n_trajectories=100)
 
     # compute metrics
 
@@ -1114,8 +966,8 @@ def dry_test():
     print_metrics(rl_df, "Controller with RL Expert")
 
     # Plot stuff
-    # plot_metrics_bar(controller_df, "Controller with Dummy Expert","dummy_model")
-    # plot_metrics_bar(rl_df, "Controller with RL Expert", "rl_model")
+    plot_metrics_bar(controller_df, "Controller with Dummy Expert","dummy_model", FIGURES_PATH)
+    plot_metrics_bar(rl_df, "Controller with RL Expert", "rl_model", FIGURES_PATH)
 
     trajs = [controller_trajectories, rl_trajectories]
     labels = ["Controller with Dummy Expert", "Controller with RL Expert"]
@@ -1124,7 +976,7 @@ def dry_test():
 
     dfs = [controller_df, rl_df]
 
-    plot_metrics_comparison(dfs, labels, "Comparison of Controller with Dummy Expert and RL Expert", "comparison_plot")
+    plot_metrics_comparison(dfs, labels, "Comparison of Controller with Dummy Expert and RL Expert", "comparison_plot", FIGURES_PATH)
 
 
 
@@ -1236,6 +1088,6 @@ if __name__ == "__main__":
 
     # main()
 
-    test_jax_env()
+    # test_jax_env()
 
-    # dry_test()
+    dry_test()

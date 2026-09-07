@@ -17,6 +17,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 
+from sbx import PPO
+from stable_baselines3.common.vec_env import VecNormalize
+
 MAX_TORQUE = 5e-5
 
 
@@ -168,6 +171,38 @@ def sample_state(batch_size, key, omega_min=0.0, omega_max=0.0):
     return jnp.concatenate([q, omega], axis=-1)
 
 
+def get_expert_policy(expert_policy: PPO, vec_env: VecNormalize):
+
+
+    # Extract the expert policy's actor module and parameters
+    actor_module = expert_policy.policy.actor
+    actor_params = expert_policy.policy.actor_state.params
+
+    # Extract the vector normalization statistics
+    obs_mean = jnp.array(vec_env.obs_rms.mean, dtype=jnp.float32)
+    obs_var = jnp.array(vec_env.obs_rms.var, dtype=jnp.float32)
+    obs_count = vec_env.obs_rms.count
+    obs_eps = vec_env.epsilon
+    obs_clip = vec_env.clip_obs
+
+    def expert_policy_fn(obs: jnp.ndarray) -> jnp.ndarray:
+        # Cast down to float32 for the actor module
+        obs = obs.astype(jnp.float32)
+
+        # Normalize the observation
+        normalized_obs = (obs - obs_mean) / jnp.sqrt(obs_var + obs_eps)
+        normalized_obs = jnp.clip(normalized_obs, -obs_clip, obs_clip)
+
+        # Pass through the actor module to get the action
+        dist = actor_module.apply(actor_params, normalized_obs[None, :])
+        action = dist.mode()[0]  # Get the mode of the distribution and remove the batch dimension
+        action = jnp.clip(action, -1.0, 1.0)  # Ensure action is within [-1, 1]
+        return action.astype(jnp.float64)  # Cast back to float64 for consistency
+
+
+    return expert_policy_fn
+
+
 def make_dummy_expert(action_dim):
 
     def dummy_expert(obs):
@@ -272,7 +307,7 @@ def compute_metrics_multi(trajectories_list, labels, **kwargs)-> pd.DataFrame:
     return pd.concat(dfs, ignore_index=True)
 
 
-def plot_metrics_bar(metrics_df, title=None, filename=None, figsize=(8, 5)):
+def plot_metrics_bar(metrics_df, title=None, filename=None, file_path=None, figsize=(8, 5)):
     """Create bar plots for all metrics."""
     
     metrics_config = [
@@ -313,14 +348,18 @@ def plot_metrics_bar(metrics_df, title=None, filename=None, figsize=(8, 5)):
         
         if filename:
             print("./Saving figure...")
-            Path('figures').mkdir(exist_ok=True)
+            # Make figures directory inside filepath
+            figure_dir = Path(file_path) / 'figures' if file_path else Path('figures')
+            figure_dir.mkdir(exist_ok=True)
             suffix = col.replace(' ', '_').replace('(%)', 'pct').replace('(', '').replace(')', '').replace('/', '_')
-            plt.savefig(f"figures/{filename}_{suffix}.png", dpi=150, bbox_inches='tight')
+            figure_path = figure_dir / f"{filename}_{suffix}.png"
+            plt.savefig(figure_path, dpi=150, bbox_inches='tight')
         
         plt.show()
 
 
-def plot_metrics_comparison(metrics_list, agent_labels, title=None, filename=None, figsize=(10, 5)):
+
+def plot_metrics_comparison(metrics_list, agent_labels, title=None, filename=None,file_path=None, figsize=(10, 5)):
     """
     Compare metrics across multiple agents.
     
@@ -366,9 +405,10 @@ def plot_metrics_comparison(metrics_list, agent_labels, title=None, filename=Non
         plt.tight_layout()
         
         if filename:
-            Path('figures').mkdir(exist_ok=True)
+            figure_dir = Path(file_path) / 'figures' if file_path else Path('figures')
+            figure_dir.mkdir(exist_ok=True)
             suffix = col.replace(' ', '_').replace('(%)', 'pct').replace('(', '').replace(')', '').replace('/', '_')
-            plt.savefig(f"figures/{filename}_{suffix}.png", dpi=150, bbox_inches='tight')
+            plt.savefig(figure_dir / f"{filename}_{suffix}.png", dpi=150, bbox_inches='tight')
         
         plt.show()
 

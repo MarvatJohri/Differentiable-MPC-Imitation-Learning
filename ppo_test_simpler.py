@@ -11,6 +11,9 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 
+import jax
+import time
+
 from sbx import PPO
 from stable_baselines3.common.callbacks import (
     EvalCallback,
@@ -44,15 +47,19 @@ BASE_LOG_PATH = str(HERE / "logs")
 # from dynamics.base_dynamics import Dynamics
 # from dynamics.spacecraft_dynamics import SpacecraftDynamics
 # from dynamics.orbit_dynamics import OrbitDynamics
-# from simulation_env_simpler import SpacecraftEnv
 # from dynamics.planetary_params import Earth, Uranus
 # from utils.propagate import TrajectoryGenerator
 
 # from utils.learning import load_model
 
 
+from simulation_env_simpler import SpacecraftEnv
+from simulation_env_jax import SpacecraftEnvJax, generate_n_trajectories
+from mj_utils import make_dummy_controller, compute_metrics, print_metrics, get_expert_policy
+
+
 # Experiment identification
-EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
+EXPERIMENT_NAME = "spacecraft_ppo_v1_torque_only"
 EXPERIMENT_NOTES = "Initial PPO training on Earth orbit"
 
 DYNAMICS_PARAMETERS = {
@@ -69,6 +76,8 @@ MAX_EPISODE_STEPS = 1500          # Max steps per episode
 # State/action limits
 STATE_LIMITS = [[-1, 1]] * 4 + [[-2, 2]] * 3  # [quat, omega]
 CONTROL_LIMIT_SCALE = 1        # Scales [-1, 1] control limits
+CONTROL_LIMITS = CONTROL_LIMIT_SCALE * np.array([[-1, 1]] * 3)  # Torque limits
+MAX_TORQUE = 5e-5                # Maximum torque (N*m)
 
 # Reward shaping
 THETA_THRESHOLD = np.deg2rad(15.0)  # Convert to radians
@@ -195,6 +204,81 @@ def evaluate_model(env: VecNormalize, model, num_episodes=100, seed=0):
         }
     
     return results
+
+
+
+
+
+
+
+def evaluate(vec_env: VecNormalize,
+             rl_model: PPO,
+             max_steps: int,
+             num_episodes: int, 
+             key: jax.random.PRNGKey):
+
+    print("RL Agent")
+
+
+    # Evaluate using the gen trajectories function
+
+    dummy_controller = make_dummy_controller(state_dim=7, action_dim=3)
+
+    rl_policy = get_expert_policy(rl_model, vec_env)
+
+    # Make env
+    env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMETERS,
+                            dt=DT,
+                            max_env_steps=max_steps,
+                            state_limits=STATE_LIMITS,
+                            control_limits=CONTROL_LIMITS,
+                            max_torque=MAX_TORQUE,
+                            dyn_noise_std=DYN_NOISE_STD)
+
+    # Generate 100 trajectories using controller and dummy expert
+    start_time = time.time()
+    trajectories, key = generate_n_trajectories(env=env,
+                                                controller=dummy_controller,
+                                                expert_policy=rl_policy,
+                                                key=key,
+                                                beta=1.0,
+                                                max_ep_steps=max_steps,
+                                                n_trajectories=num_episodes)
+
+    print("Evaluation Done")
+    print("Time taken: ",time.time() - start_time)
+
+    # Thresholds for success
+    angle_threshold = 15 # phi = 2*arccos(q.T @ q_g)*180/pi
+    omega_threshold = 5 # (deg/s)
+
+    # Tolerances for stability
+    angle_tol = 10
+    omega_tol = 5
+    tail_length = 100
+    # time_hist_max = 250
+    angle_hist_max = 30
+    omega_hist_max = 15
+
+    # _ = system.plot_costs(trajectories, target_states, plot_stats=True)
+
+    # system.plot_violin_and_bar(trajectories, target_states, angle_threshold=angle_threshold, omega_threshold=omega_threshold,angle_stability_tol=angle_tol, omega_stability_tol=omega_tol, tail_length=tail_length, verbose=True)
+
+
+    # compute metrics
+    df = compute_metrics(trajectories,
+                         dt=DT,
+                         angle_threshold=angle_threshold,
+                         omega_threshold=omega_threshold,
+                         angle_tol_stability=angle_tol,
+                         omega_tol_stability=omega_tol,
+                         tail_length=tail_length)
+
+    print_metrics(df, "Evaluation Metrics")
+
+
+
+
 
 def plot_reward_evolution(results, save_path=None):
     """Plot mean reward ± std at each timestep."""
@@ -388,21 +472,21 @@ def save_results():
 def main():
 
 
-    # Path to magnetic field models
-    model_path = URANUS_MPC_PATH + '/models/'
+        # # Path to magnetic field models
+        # model_path = URANUS_MPC_PATH + '/models/'
 
-    planet = Earth 
+        # planet = Earth 
 
-    # Load learned magnetic field models
-    if planet is Earth:
-        model_s, _ = load_model(filename=model_path + '/earth_b_4d.eqx') 
-    elif planet is Uranus:
-        model_s, _ = load_model(filename=model_path + '/uranus_b_4d.eqx')
+        # # Load learned magnetic field models
+        # if planet is Earth:
+        #     model_s, _ = load_model(filename=model_path + '/earth_b_4d.eqx') 
+        # elif planet is Uranus:
+        #     model_s, _ = load_model(filename=model_path + '/uranus_b_4d.eqx')
 
 
-    spacecraft_dynamics = SpacecraftDynamics(mag_model=model_s,planet=planet)
-    dynamics_params = spacecraft_dynamics.dynamics_params
-    system = TrajectoryGenerator(dynamics=spacecraft_dynamics, dt=DT)
+        # spacecraft_dynamics = SpacecraftDynamics(mag_model=model_s,planet=planet)
+        # dynamics_params = spacecraft_dynamics.dynamics_params
+        # system = TrajectoryGenerator(dynamics=spacecraft_dynamics, dt=DT)
 
     rl_model_path = SAVE_PATH + '/final_model.zip'
 
@@ -432,34 +516,41 @@ def main():
     # load model
     model = PPO.load(rl_model_path, env=eval_env)
 
-    # Run evaluations and collect trajectories
-    results = evaluate_model(eval_env, model, num_episodes=NUM_EPSODES, seed=0)
+    # Run evaluation
+    evaluate(vec_env=eval_env,
+             rl_model=model, 
+             max_steps=MAX_EPISODE_STEPS, 
+             num_episodes=NUM_EPSODES, 
+             key=jax.random.PRNGKey(0))
 
-    trajectories = results['trajectories']
-    target_states = results['target_states']
-    step_rewards = results['step_rewards']
-    step_actions = results['step_actions']
-    cumulative_rewards = results['cumulative_rewards']
+    # # Run evaluations and collect trajectories
+    # results = evaluate_model(eval_env, model, num_episodes=NUM_EPSODES, seed=0)
 
-    # Thresholds for success
-    angle_threshold = 15 # phi = 2*arccos(q.T @ q_g)*180/pi
-    omega_threshold = 5 # (deg/s)
+    # trajectories = results['trajectories']
+    # target_states = results['target_states']
+    # step_rewards = results['step_rewards']
+    # step_actions = results['step_actions']
+    # cumulative_rewards = results['cumulative_rewards']
 
-    # Tolerances for stability
-    angle_tol = 10
-    omega_tol = 5
-    tail_length = 100
-    # time_hist_max = 250
-    angle_hist_max = 30
-    omega_hist_max = 15
+    # # Thresholds for success
+    # angle_threshold = 15 # phi = 2*arccos(q.T @ q_g)*180/pi
+    # omega_threshold = 5 # (deg/s)
 
-    _ = system.plot_costs(trajectories, target_states, plot_stats=True)
+    # # Tolerances for stability
+    # angle_tol = 10
+    # omega_tol = 5
+    # tail_length = 100
+    # # time_hist_max = 250
+    # angle_hist_max = 30
+    # omega_hist_max = 15
 
-    system.plot_violin_and_bar(trajectories, target_states, angle_threshold=angle_threshold, omega_threshold=omega_threshold,angle_stability_tol=angle_tol, omega_stability_tol=omega_tol, tail_length=tail_length, verbose=True)
+    # _ = system.plot_costs(trajectories, target_states, plot_stats=True)
 
-    print_eval_summary(results)
-    plot_reward_evolution(results, save_path=str(FIGURE_PATH + '/reward_evolution.png'))
-    plot_action_evolution(results, save_path=str(FIGURE_PATH + '/action_evolution.png'))
+    # system.plot_violin_and_bar(trajectories, target_states, angle_threshold=angle_threshold, omega_threshold=omega_threshold,angle_stability_tol=angle_tol, omega_stability_tol=omega_tol, tail_length=tail_length, verbose=True)
+
+    # print_eval_summary(results)
+    # plot_reward_evolution(results, save_path=str(FIGURE_PATH + '/reward_evolution.png'))
+    # plot_action_evolution(results, save_path=str(FIGURE_PATH + '/action_evolution.png'))
 
 
 
