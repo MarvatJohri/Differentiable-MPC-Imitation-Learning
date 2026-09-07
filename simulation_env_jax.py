@@ -373,7 +373,7 @@ def generate_trajectory(env: SpacecraftEnvJax,
     # Generate initial nominal trajectories
     key, subkey = jax.random.split(key)
     nominal_traj = jnp.tile(init_env_state.state, (horizon + 1, 1))
-    nominal_cntrl = 1e-3 * jax.random.normal(subkey, shape=(horizon, nu), dtype=jnp.float64)
+    nominal_cntrl = 1e-8 * jax.random.normal(subkey, shape=(horizon, nu), dtype=jnp.float64)
 
     init_carry = (init_env_state, init_obs, 0, nominal_traj, nominal_cntrl, key)
 

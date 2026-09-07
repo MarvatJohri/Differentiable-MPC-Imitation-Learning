@@ -83,7 +83,7 @@ from functools import partial
 
 
 # Experiment params
-RL_EXPERIMENT_NAME = "spacecraft_ppo_v1_torque_only"
+RL_EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
 EXPERIMENT_NAME = "spacecraft_ppo_imitation_dagger_v1_torque_only_experiment1"
 EXPERIMENT_NOTES = "Initial imitation learning on Earth orbit"
 
@@ -408,6 +408,9 @@ def loss_fn(controller: DiffMPCController,
                                                  data_batch["nominal_cntrl"])
 
     predicted_actions = predicted_actions / MAX_TORQUE  # Scale predicted actions to [-1, 1] range for loss computation
+
+
+
 
     loss = jnp.mean((predicted_actions - data_batch["expert_actions"]) ** 2)      
                           
@@ -1086,8 +1089,8 @@ def test_jax_env():
 if __name__ == "__main__":
 
 
-    # main()
+    main()
 
     # test_jax_env()
 
-    dry_test()
+    # dry_test()
