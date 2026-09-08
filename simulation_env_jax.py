@@ -55,7 +55,7 @@ class SpacecraftEnvJax(eqx.Module):
 
     # Env params
     dt: float = eqx.field(static=True)
-    max_env_steps: int = eqx.field(static=True)
+    max_ep_steps: int = eqx.field(static=True)
     max_torque: float = eqx.field(static=True)
     dyn_noise_std: float = eqx.field(static=True)
 
@@ -78,7 +78,7 @@ class SpacecraftEnvJax(eqx.Module):
     def __init__(self,
                  dynamics_params=DYNAMICS_PARAMS,
                  dt: Optional[float] = 0.1,
-                 max_env_steps: Optional[int] = 1500,
+                 max_ep_steps: Optional[int] = 1500,
                  state_limits: Optional[jnp.ndarray] = None,
                  control_limits: Optional[jnp.ndarray] = None,
                  max_torque: Optional[float] = 5e-5,
@@ -98,7 +98,7 @@ class SpacecraftEnvJax(eqx.Module):
         self.mass = dynamics_params['mass']
 
         self.dt = dt
-        self.max_env_steps = max_env_steps
+        self.max_ep_steps = max_ep_steps
         self.max_torque = max_torque
         self.dyn_noise_std = dyn_noise_std
 

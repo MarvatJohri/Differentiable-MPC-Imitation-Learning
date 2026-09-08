@@ -57,7 +57,7 @@ class FeedForwardNetwork(eqx.Module):
     eps: float = eqx.field(static=True) 
     decomposition_type: str = eqx.field(static=True)
     activation: str = eqx.field(static=True)
-    output_horizon: int = eqx.field(static=True)
+    qr_output_horizon: int = eqx.field(static=True)
 
 
     layers: list
@@ -69,11 +69,11 @@ class FeedForwardNetwork(eqx.Module):
     def __init__(self, 
                  nx, nu, key, 
                  layers, activation='relu', output_activation='tanh',
-                 output_horizon=10, eps=1e-3, decomposition_type='diagonal'):
+                 qr_output_horizon=10, eps=1e-3, decomposition_type='diagonal'):
         self.nx = nx
         self.nu = nu
         self.eps = eps
-        self.output_horizon = output_horizon # Determinees to horizon Q and R matrices vary
+        self.qr_output_horizon = qr_output_horizon # Determinees to horizon Q and R matrices vary
         # output_horizon = 1 => Q,R constant over horizon = N
         # I have no idea if its possible to handle other cases but whatever
         self.decomposition_type = decomposition_type
@@ -95,7 +95,7 @@ class FeedForwardNetwork(eqx.Module):
             raise ValueError("Invalid type. Must be 'diagonal', 'full', or 'cholesky'.")
 
         # Output dimension is multiplied by horizon of MPC output
-        output_dim *= output_horizon
+        output_dim *= qr_output_horizon
 
         dims = [obs_dim, *layers, output_dim]
 
@@ -133,8 +133,8 @@ class DiffMPCController(eqx.Module):
 
     network: FeedForwardNetwork
 
-    output_horizon: int = eqx.field(static=True)
-    horizon: int = eqx.field(static=True)
+    qr_output_horizon: int = eqx.field(static=True)
+    mpc_horizon: int = eqx.field(static=True)
     nx: int = eqx.field(static=True)
     nu: int = eqx.field(static=True)
     dt: float = eqx.field(static=True)
@@ -151,15 +151,15 @@ class DiffMPCController(eqx.Module):
 
 
 
-    def __init__(self, network: FeedForwardNetwork, horizon, dt,
+    def __init__(self, network: FeedForwardNetwork, mpc_horizon, dt,
                  state_limits, control_limits,
                  dynamics_params = DYNAMICS_PARAMS):
 
         self.network = network
         self.nx = network.nx
         self.nu = network.nu
-        self.horizon = horizon
-        self.output_horizon = network.output_horizon
+        self.mpc_horizon = mpc_horizon
+        self.qr_output_horizon = network.qr_output_horizon
         self.dt = dt
         self.state_limits = state_limits
         self.control_limits = control_limits
@@ -169,7 +169,7 @@ class DiffMPCController(eqx.Module):
 
 
         # Build solver once
-        self.solver, self.solver_params = build_mpc_solver(self.horizon, self.nx - 1, self.nu)
+        self.solver, self.solver_params = build_mpc_solver(self.mpc_horizon, self.nx - 1, self.nu)
 
     def state_dot_nominal(self, true_state: jnp.ndarray, control: jnp.ndarray, u_noise: jnp.ndarray) -> jnp.ndarray:
 
@@ -268,7 +268,7 @@ class DiffMPCController(eqx.Module):
         A_data = get_A_data(A, B, self.solver_params)
 
         b_eq = jnp.concatenate([
-            jnp.zeros(self.horizon * (self.nx - 1)),  # dynamics
+            jnp.zeros(self.mpc_horizon * (self.nx - 1)),  # dynamics
             x0,            # initial condition
         ])
 
@@ -280,8 +280,8 @@ class DiffMPCController(eqx.Module):
         u_bounds = jnp.stack([-u_min, u_max], axis=1).flatten()
 
         b_ineq = jnp.concatenate([
-            jnp.tile(-x_min, self.horizon + 1),  # -x <= -x_min
-            jnp.tile(x_max, self.horizon + 1),   # x <= x_max
+            jnp.tile(-x_min, self.mpc_horizon + 1),  # -x <= -x_min
+            jnp.tile(x_max, self.mpc_horizon + 1),   # x <= x_max
             u_bounds,
         ])
 
@@ -289,7 +289,7 @@ class DiffMPCController(eqx.Module):
 
         P_data, P_dense = get_P_csr_data(Q_seq, R_seq, self.solver_params)
 
-        cntrl_goal = jnp.zeros((self.horizon, self.nu))
+        cntrl_goal = jnp.zeros((self.mpc_horizon, self.nu))
         blocks = jnp.hstack((cntrl_goal, xg[1:] ))
         full_vector = jnp.concatenate((xg[0], blocks.ravel()))
         q = -P_dense @ full_vector
@@ -341,7 +341,7 @@ class DiffMPCController(eqx.Module):
         u_nominal = jnp.asarray(u_nominal, dtype=jnp.float64)
 
         theta = self.network(obs)
-        Q, R = network_output_to_QR(theta, self.nx - 1, self.nu, self.network.decomposition_type, self.output_horizon)
+        Q, R = network_output_to_QR(theta, self.nx - 1, self.nu, self.network.decomposition_type, self.qr_output_horizon)
         # Make prints for debugging 
         # jax.debug.print("Q : {}", Q)
         # jax.debug.print("R : {}", R)
@@ -366,7 +366,7 @@ class DiffMPCController(eqx.Module):
 
         # Generate a nominal trajectory using previous control inputs
         # this is the "true" nominal trajectory, accounts for non-linearity (but not noise), unlike solution from ocp
-        x_nominal = self.generate_nominal_trajectory(x0, self.horizon, u_nominal, self.dt)
+        x_nominal = self.generate_nominal_trajectory(x0, self.mpc_horizon, u_nominal, self.dt)
 
         dx0 = self.get_error_coordinates(x0,x_nominal[0])
         dxgoal = jax.vmap(self.get_error_coordinates,in_axes=(None, 0))(x_goal, x_nominal)
@@ -393,7 +393,7 @@ class DiffMPCController(eqx.Module):
 
 
 
-        reshaped = solution.x[self.nx - 1:].reshape(self.horizon, self.nx - 1 + self.nu)
+        reshaped = solution.x[self.nx - 1:].reshape(self.mpc_horizon, self.nx - 1 + self.nu)
         
         #### Reshaping
         du = reshaped[:, :self.nu]

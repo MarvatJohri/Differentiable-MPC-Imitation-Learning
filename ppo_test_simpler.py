@@ -34,8 +34,8 @@ from matplotlib import pyplot as plt
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
-BASE_SAVE_PATH = str(HERE / "results")
-BASE_LOG_PATH = str(HERE / "logs")
+PPO_BASE_SAVE_PATH = str(HERE / "ppo_results")
+PPO_BASE_LOG_PATH = str(HERE / "ppo_logs")
 
 # URANUS_MPC_PATH = str((ROOT / "uranus-mpc").resolve())
 
@@ -59,8 +59,8 @@ from mj_utils import make_dummy_controller, compute_metrics, print_metrics, get_
 
 
 # Experiment identification
-EXPERIMENT_NAME = "spacecraft_ppo_v1_torque_only"
-EXPERIMENT_NOTES = "Initial PPO training on Earth orbit"
+PPO_EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
+PPO_EXPERIMENT_NOTES = "Initial PPO training on Earth orbit"
 
 DYNAMICS_PARAMETERS = {
     "mass": 0.75,
@@ -97,8 +97,8 @@ NUM_EPSODES = 100
 # =============================================================================
 
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
-SAVE_PATH = os.path.join(BASE_SAVE_PATH, EXPERIMENT_NAME)
-LOG_PATH = os.path.join(BASE_LOG_PATH, EXPERIMENT_NAME)
+SAVE_PATH = os.path.join(PPO_BASE_SAVE_PATH, PPO_EXPERIMENT_NAME)
+LOG_PATH = os.path.join(PPO_BASE_LOG_PATH, PPO_EXPERIMENT_NAME)
 
 FIGURE_PATH = os.path.join(SAVE_PATH, "figures")
 CHECKPOINT_PATH = os.path.join(SAVE_PATH, "checkpoints")
@@ -117,7 +117,7 @@ def make_env(dynamics_params: Dict, seed: int = None):
     env = SpacecraftEnv(
         dynamics_params=dynamics_params,
         dt=DT,
-        num_steps=MAX_EPISODE_STEPS,
+        max_ep_steps=MAX_EPISODE_STEPS,
         dyn_noise_std=DYN_NOISE_STD,
         state_limits=np.array(STATE_LIMITS),
         control_limits=CONTROL_LIMIT_SCALE * np.array([[-1, 1]] * 3),
@@ -229,7 +229,7 @@ def evaluate(vec_env: VecNormalize,
     # Make env
     env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMETERS,
                             dt=DT,
-                            max_env_steps=max_steps,
+                            max_ep_steps=max_steps,
                             state_limits=STATE_LIMITS,
                             control_limits=CONTROL_LIMITS,
                             max_torque=MAX_TORQUE,
@@ -498,12 +498,12 @@ def main():
 
     # print exp info
     print("=" * 60)
-    print(f"EXPERIMENT: {EXPERIMENT_NAME}")
+    print(f"EXPERIMENT: {PPO_EXPERIMENT_NAME}")
     print("=" * 60)
     print(f"Save path:    {SAVE_PATH}")
     print(f"Log path:     {LOG_PATH}")
-    if EXPERIMENT_NOTES:
-        print(f"Notes:        {EXPERIMENT_NOTES}")
+    if PPO_EXPERIMENT_NOTES:
+        print(f"Notes:        {PPO_EXPERIMENT_NOTES}")
     print("=" * 60)
 
 

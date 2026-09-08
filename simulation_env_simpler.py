@@ -83,7 +83,7 @@ class SpacecraftEnv(gym.Env):
             self,
             dynamics_params,
             dt: Optional[float] = 0.1,
-            num_steps: Optional[int] = 1500,
+            max_ep_steps: Optional[int] = 1500,
             state_limits: Optional[np.ndarray] = None,
             control_limits: Optional[np.ndarray] = None,
             max_torque: Optional[float] = 5e-5,
@@ -91,15 +91,16 @@ class SpacecraftEnv(gym.Env):
             theta_threshold: Optional[float] = 0.5,
             omega_threshold: Optional[float] = 0.1,
             theta_threshold_reward: Optional[float] = 10.0,
+            omega_fail_penalty: Optional[float] = 50.0,
+            goal_reward: Optional[float] = 50.0,
             omega_penalty: Optional[float] = 0.1,
             action_penalty: Optional[float] = 0.1,
-            goal_reward: Optional[float] = 10.0,
             ):
         
         super().__init__()
         self.dynamics_params = dynamics_params
         self.dt = dt
-        self.num_steps = num_steps
+        self.max_ep_steps = max_ep_steps
         self.max_torque = max_torque
 
         if state_limits is None:
@@ -129,6 +130,7 @@ class SpacecraftEnv(gym.Env):
         self.omega_penalty = omega_penalty
         self.action_penalty = action_penalty
         self.goal_reward = goal_reward
+        self.omega_fail_penalty = omega_fail_penalty
         self.theta_threshold_reward = theta_threshold_reward
 
         # self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(13,), dtype=np.float32)
@@ -492,7 +494,7 @@ class SpacecraftEnv(gym.Env):
         # This is technically not correct but since
         # I've only considered initializations where omega_desired = 0, this technically works
         if np.any(np.abs(omega_err) > self.state_limits[4:, 1]):
-            reward -= 50.0  # Arbitrary large penalty for exceeding angular velocity limits
+            reward -= self.omega_fail_penalty  # Arbitrary large penalty for exceeding angular velocity limits
             return reward
 
 
@@ -534,7 +536,7 @@ class SpacecraftEnv(gym.Env):
             # print("Angle tolerance met at step {}: angle_error={:.3f} degrees, omega_error_norm={:.3f}".format(self.step_count, np.rad2deg(angle_error), omega_error_norm))
             reward += self.theta_threshold_reward
             if omega_error_norm < self.omega_threshold:
-                reward += 50
+                reward += self.goal_reward
 
         return reward
 
@@ -565,7 +567,7 @@ class SpacecraftEnv(gym.Env):
 
         # Check if max steps reached or smthng idk what is put here actually
 
-        truncated = self.step_count >= self.num_steps
+        truncated = self.step_count >= self.max_ep_steps
 
         return truncated
 

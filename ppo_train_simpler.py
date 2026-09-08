@@ -20,24 +20,26 @@ from stable_baselines3.common.callbacks import (
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
+from config import configs
+
 
 
 # =============================================================================
 # PATHS
 # =============================================================================
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
+# HERE = Path(__file__).resolve().parent
+# ROOT = HERE.parent
 
-BASE_SAVE_PATH = str(HERE / "results")
-BASE_LOG_PATH = str(HERE / "logs")
+# PPO_BASE_SAVE_PATH = str(HERE / "ppo_results")
+# PPO_BASE_LOG_PATH = str(HERE / "ppo_logs")
 
-URANUS_MPC_PATH = str((ROOT / "uranus-mpc").resolve())
+# URANUS_MPC_PATH = str((ROOT / "uranus-mpc").resolve())
 
 
 
-sys.path.insert(0, str((ROOT / "uranus-mpc").resolve()))
-sys.path.insert(0, str((ROOT / "uranus-mpc" / "utils").resolve()))
+# sys.path.insert(0, str((ROOT / "uranus-mpc").resolve()))
+# sys.path.insert(0, str((ROOT / "uranus-mpc" / "utils").resolve()))
 
 # Your environment imports - adjust as needed
 # from dynamics.base_dynamics import Dynamics
@@ -53,61 +55,67 @@ from simulation_env_simpler import SpacecraftEnv
 # =============================================================================
 
 # Experiment params
-EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
-EXPERIMENT_NOTES = "Initial PPO training on Earth orbit"
+# PPO_EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
+# PPO_EXPERIMENT_NOTES = "Initial PPO training on Earth orbit"
 
-DYNAMICS_PARAMETERS = {
-    "mass": 0.75,
-    "inertia": np.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
-}
-DYNAMICS_PARAMETERS["inertia_inv"] = np.linalg.inv(DYNAMICS_PARAMETERS["inertia"]) 
+# DYNAMICS_PARAMETERS = {
+#     "mass": 0.75,
+#     "inertia": np.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
+# }
+# DYNAMICS_PARAMETERS["inertia_inv"] = np.linalg.inv(DYNAMICS_PARAMETERS["inertia"]) 
 
-# Environment
-DYN_NOISE_STD = 1e-6              # Standard deviation of dynamics noise
-DT = 0.1                         # Simulation timestep
+# # Environment
+# DYN_NOISE_STD = 1e-6              # Standard deviation of dynamics noise
+# DT = 0.1                         # Simulation timestep
 
-# State/action limits
-STATE_LIMITS = [[-1, 1]] * 4 + [[-2, 2]] * 3  # [quat, omega]
-CONTROL_LIMIT_SCALE = 1        # Scales [-1, 1] control limits
+# # State/action limits
+# STATE_LIMITS = [[-1, 1]] * 4 + [[-2, 2]] * 3  # [quat, omega]
+# CONTROL_LIMIT_SCALE = 1        # Scales [-1, 1] control limits
 
-# Reward shaping
-THETA_THRESHOLD = np.deg2rad(15.0)  
-OMEGA_THRESHOLD = np.deg2rad(5.0)                 # Angular velocity tolerance (rad/s)
-OMEGA_PENALTY = 0.5               # Penalty weight for omega error
-ACTION_PENALTY = 0.1              # Penalty weight for action magnitude
-GOAL_REWARD = 50.0              # Bonus for reaching goal
+# # Reward shaping
+# THETA_THRESHOLD = np.deg2rad(15.0)  
+# OMEGA_THRESHOLD = np.deg2rad(5.0)                 # Angular velocity tolerance (rad/s)
+# OMEGA_PENALTY = 0.5               # Penalty weight for omega error
+# ACTION_PENALTY = 0.1              # Penalty weight for action magnitude
+# GOAL_REWARD = 50.0              # Bonus for reaching goal
 
 
-# PPO Hyperparameters
-LEARNING_RATE = 1e-3
-LEARNING_RATE_SCHEDULE = "constant"  # "constant" or "linear" or cosine
-LEARNING_RATE_FINAL = 1e-5            # Minimum learning rate for linear schedule
+# # PPO Hyperparameters
+# LEARNING_RATE = 1e-3
+# LEARNING_RATE_SCHEDULE = "constant"  # "constant" or "linear" or cosine
+# LEARNING_RATE_FINAL = 1e-5            # Minimum learning rate for linear schedule
 
-MAX_EPISODE_STEPS = 1500          # Max steps per episode
-N_ROLLOUTS = 3                      # Number of rollouts per update
-N_STEPS = N_ROLLOUTS * MAX_EPISODE_STEPS  # Steps per rollout
-BATCH_SIZE = 500                  # Minibatch size
-N_EPOCHS = 10                    # SGD epochs per update
-GAMMA = 0.99                     # Discount factor
-GAE_LAMBDA = 0.95                # GAE lambda
-CLIP_RANGE = 0.2                 # PPO clip range
-ENT_COEF = 1e-2                  # Entropy coefficient
-VF_COEF = 0.5                    # Value function coefficient
-MAX_GRAD_NORM = 0.5              # Gradient clipping
+# MAX_EPISODE_STEPS = 1500          # Max steps per episode
+# N_ROLLOUTS = 3                      # Number of rollouts per update
+# N_STEPS = N_ROLLOUTS * MAX_EPISODE_STEPS  # Steps per rollout
+# BATCH_SIZE = 500                  # Minibatch size
+# N_EPOCHS = 10                    # SGD epochs per update
+# GAMMA = 0.99                     # Discount factor
+# GAE_LAMBDA = 0.95                # GAE lambda
+# CLIP_RANGE = 0.2                 # PPO clip range
+# ENT_COEF = 1e-2                  # Entropy coefficient
+# VF_COEF = 0.5                    # Value function coefficient
+# MAX_GRAD_NORM = 0.5              # Gradient clipping
 
-# Policy network
-POLICY_TYPE = "MlpPolicy"
-# NET_ARCH = [256, 256]          # Uncomment to customize network size
-# POLICY_NET_ARCH = [512, 512]
-# VALUE_NET_ARCH = [512, 512]
+# # Policy network
+# POLICY_TYPE = "MlpPolicy"
+# # NET_ARCH = [256, 256]          # Uncomment to customize network size
+# # POLICY_NET_ARCH = [512, 512]
+# # VALUE_NET_ARCH = [512, 512]
 
-NET_ARCH = [256, 256]
+# NET_ARCH = [256, 256]
 
-# Training
-TOTAL_TIMESTEPS = 1_500_000
-EVAL_FREQ = 5_000                # Evaluate every N timesteps
-N_EVAL_EPISODES = 10             # Episodes per evaluation
-CHECKPOINT_FREQ = 50_000         # Save checkpoint every N timesteps
+# # Training
+# TOTAL_TIMESTEPS = 1_500_000
+# EVAL_FREQ = 5_000                # Evaluate every N timesteps
+# N_EVAL_EPISODES = 10             # Episodes per evaluation
+# CHECKPOINT_FREQ = 50_000         # Save checkpoint every N timesteps
+
+globals().update(configs)  # Update globals with configs from config.py
+globals().update(configs["Spacecraft_Environment"])  # Update globals with environment configs
+globals().update(configs["PPO_Hyperparameters"])  # Update globals with PPO hyperparameters
+
+
 
 # Reproducibility
 SEED = 42
@@ -118,8 +126,8 @@ SEED = 42
 # =============================================================================
 
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
-SAVE_PATH = os.path.join(BASE_SAVE_PATH, EXPERIMENT_NAME)
-LOG_PATH = os.path.join(BASE_LOG_PATH, EXPERIMENT_NAME)
+SAVE_PATH = os.path.join(PPO_BASE_SAVE_PATH, PPO_EXPERIMENT_NAME)
+LOG_PATH = os.path.join(PPO_BASE_LOG_PATH, PPO_EXPERIMENT_NAME)
 CHECKPOINT_PATH = os.path.join(SAVE_PATH, "checkpoints")
 TENSORBOARD_PATH = os.path.join(LOG_PATH, "tensorboard")
 
@@ -165,15 +173,15 @@ def get_config() -> dict:
     """Return all config as a dictionary for saving."""
     return {
         "experiment": {
-            "name": EXPERIMENT_NAME,
-            "notes": EXPERIMENT_NOTES,
+            "name": PPO_EXPERIMENT_NAME,
+            "notes": PPO_EXPERIMENT_NOTES,
             "timestamp": TIMESTAMP,
         },
         "environment": {
             "dt": DT,
-            "num_steps": MAX_EPISODE_STEPS,
+            "num_steps": MAX_EP_STEPS,
             "state_limits": STATE_LIMITS,
-            "control_limit_scale": CONTROL_LIMIT_SCALE,
+            "control_limits": CONTROL_LIMITS,
             "theta_tol": THETA_THRESHOLD,
             "omega_tol": OMEGA_THRESHOLD,
             "omega_penalty": OMEGA_PENALTY,
@@ -190,12 +198,9 @@ def get_config() -> dict:
             "ent_coef": ENT_COEF,
             "vf_coef": VF_COEF,
             "max_grad_norm": MAX_GRAD_NORM,
-            "policy_type": POLICY_TYPE,
         },
         "training": {
             "total_timesteps": TOTAL_TIMESTEPS,
-            "eval_freq": EVAL_FREQ,
-            "n_eval_episodes": N_EVAL_EPISODES,
             "checkpoint_freq": CHECKPOINT_FREQ,
             "seed": SEED,
         },
@@ -220,10 +225,10 @@ def make_env(dynamics_params: Dict, seed: int = None):
     env = SpacecraftEnv(
         dynamics_params=dynamics_params,
         dt=DT,
-        num_steps=MAX_EPISODE_STEPS,
+        max_ep_steps=MAX_EP_STEPS,
         dyn_noise_std=DYN_NOISE_STD,
         state_limits=np.array(STATE_LIMITS),
-        control_limits=CONTROL_LIMIT_SCALE * np.array([[-1, 1]] * 3),
+        control_limits=CONTROL_LIMITS,
         theta_threshold=THETA_THRESHOLD,
         omega_threshold=OMEGA_THRESHOLD,
         omega_penalty=OMEGA_PENALTY,
@@ -286,18 +291,18 @@ def main():
     
     # Print experiment info
     print("=" * 60)
-    print(f"EXPERIMENT: {EXPERIMENT_NAME}")
+    print(f"EXPERIMENT: {PPO_EXPERIMENT_NAME}")
     print("=" * 60)
     print(f"Timesteps:    {TOTAL_TIMESTEPS:,}")
     print(f"Save path:    {SAVE_PATH}")
     print(f"Log path:     {LOG_PATH}")
-    if EXPERIMENT_NOTES:
-        print(f"Notes:        {EXPERIMENT_NOTES}")
+    if PPO_EXPERIMENT_NOTES:
+        print(f"Notes:        {PPO_EXPERIMENT_NOTES}")
     print("=" * 60)
     
     # Save config
     config = get_config()
-    save_config(config, SAVE_PATH)
+    # save_config(config, SAVE_PATH)
     
     # Set seeds
     set_seed(SEED)

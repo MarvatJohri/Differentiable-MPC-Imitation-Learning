@@ -23,15 +23,15 @@ import logging
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
-RL_BASE_SAVE_PATH = str(HERE / "results")
-RL_BASE_LOG_PATH = str(HERE / "logs")
+PPO_BASE_SAVE_PATH = str(HERE / "ppo_results")
+PPO_BASE_LOG_PATH = str(HERE / "ppo_logs")
 
-IL_BASE_SAVE_PATH = str(HERE / "imitation_results")
+DAGGER_BASE_SAVE_PATH = str(HERE / "dagger_results")
 # IL_BASE_LOG_PATH = str(HERE / "imitation_logs")
 
 # Ensure directories exist
 
-os.makedirs(IL_BASE_SAVE_PATH, exist_ok=True)
+os.makedirs(DAGGER_BASE_SAVE_PATH, exist_ok=True)
 # os.makedirs(IL_BASE_LOG_PATH, exist_ok=True)
 
 # URANUS_MPC_PATH = str((ROOT / "uranus-mpc").resolve())
@@ -73,8 +73,17 @@ from mj_utils import make_dummy_controller, make_dummy_expert, compute_metrics, 
 # from propagate_functions import sample_episode_context, generate_trajectory
 from diffmpc_controller import DiffMPCController, FeedForwardNetwork, build_mpc_solver
 from simulation_env_jax import SpacecraftEnvJax, generate_trajectory, generate_n_trajectories
+from config import configs
 
-from functools import partial
+
+
+
+
+
+
+
+
+
 
 # TODO: Consider making this packaage more modular, 
 # with separate files for the network, the MPC solver, and the agent class.
@@ -83,9 +92,9 @@ from functools import partial
 
 
 # Experiment params
-RL_EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
-EXPERIMENT_NAME = "spacecraft_ppo_imitation_dagger_v1_torque_only_experiment1"
-EXPERIMENT_NOTES = "Initial imitation learning on Earth orbit"
+PPO_EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
+DAGGER_EXPERIMENT_NAME = "spacecraft_ppo_imitation_dagger_v1_torque_only_experiment1"
+DAGGER_EXPERIMENT_NOTES = "Initial imitation learning on Earth orbit"
 
 
 DYNAMICS_PARAMS = {
@@ -97,7 +106,7 @@ DYNAMICS_PARAMS["inertia_inv"] = jnp.linalg.inv(DYNAMICS_PARAMS["inertia"])
 # Environment params
 DT = 0.1                         # Simulation timestep
 DYN_NOISE_STD = 1e-6             # Dynamics noise
-MAX_EPISODE_LENGTH = 1500         # Max episode length
+MAX_EP_STEPS = 1500         # Max episode length
 
 
 # State/action limits
@@ -120,13 +129,13 @@ THETA_THRESHOLD_REWARD = 10.0        # Bonus for staying within theta threshold
 
 # Imitation learning hyperparameters
 LEARNING_RATE = 3e-4
-LEARNING_RATE_FINAL = 1e-4  
-LEARNING_RATE_SCHEDULE_TYPE = "constant"  # constant, linear, cosine annealing
+LEARNING_RATE_FINAL = 1e-5  
+LEARNING_RATE_SCHEDULE = "constant"  # constant, linear, cosine annealing
 BATCH_SIZE = 512
 
 BETA_DECAY = 0.95                       # Beta decay for DAgger
 NUM_EPS_STORED = 100
-MAX_BUFFER_SIZE = MAX_EPISODE_LENGTH * NUM_EPS_STORED                # Replay buffer size
+MAX_BUFFER_SIZE = MAX_EP_STEPS * NUM_EPS_STORED                # Replay buffer size
 NUM_ITERATIONS = 100
 NUM_TRAJECTORIES = 10
 NUM_GRADIENT_STEPS = 100
@@ -138,15 +147,15 @@ ACTIVATION = "relu"
 OUTPUT_ACTIVATION = "tanh"
 NETWORK_EPSILON = 1e-3
 DECOMPOSITION_TYPE = "diagonal"  # diagonal, full, cholesky
-OUTPUT_HORIZON = 1
-HORIZON = 10
+QR_OUTPUT_HORIZON = 1
+MPC_HORIZON = 10
 
 
 LOG_EVERY = 1
 CHECKPOINT_FREQUENCY = 10
 
-EVAL_FREQUENCY = 20
-NUM_EVAL_EPS = 10
+EVAL_FREQUENCY = 10
+NUM_EVAL_EPS = 100
 
 
 
@@ -160,8 +169,8 @@ SEED = 42
 # =============================================================================
 
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
-RL_SAVE_PATH = os.path.join(RL_BASE_SAVE_PATH, RL_EXPERIMENT_NAME)
-SAVE_PATH = os.path.join(IL_BASE_SAVE_PATH, EXPERIMENT_NAME)
+RL_SAVE_PATH = os.path.join(PPO_BASE_SAVE_PATH, PPO_EXPERIMENT_NAME)
+SAVE_PATH = os.path.join(DAGGER_BASE_SAVE_PATH, DAGGER_EXPERIMENT_NAME)
 FIGURES_PATH = os.path.join(SAVE_PATH, "figures")
 os.makedirs(FIGURES_PATH, exist_ok=True)
 # LOG_PATH = os.path.join(SAVE_PATH, "logs")
@@ -191,7 +200,7 @@ def make_env(dynamics_params: Dict, seed: int = None):
     env = SpacecraftEnv(
         dynamics_params=dynamics_params,
         dt=DT,
-        num_steps=MAX_EPISODE_LENGTH,
+        max_ep_steps=MAX_EP_STEPS,
         state_limits=np.array(STATE_LIMITS),
         control_limits=CONTROL_LIMIT_SCALE * np.array([[-1, 1]] * 3),
         max_torque=MAX_TORQUE,
@@ -219,7 +228,7 @@ def setup_logging(log_dir: str, log_filename: str = "training.log") -> logging.L
     """Setup logging to console and file."""
     os.makedirs(log_dir, exist_ok=True)
     
-    logger = logging.getLogger(EXPERIMENT_NAME)
+    logger = logging.getLogger(DAGGER_EXPERIMENT_NAME)
     logger.setLevel(logging.INFO)
     logger.handlers = []  # Clear existing handlers
     
@@ -245,13 +254,13 @@ def get_config() -> dict:
     """Return all config as a dictionary for saving."""
     return {
         "experiment": {
-            "name": EXPERIMENT_NAME,
-            "notes": EXPERIMENT_NOTES,
+            "name": DAGGER_EXPERIMENT_NAME,
+            "notes": DAGGER_EXPERIMENT_NOTES,
             "timestamp": TIMESTAMP,
         },
         "environment": {
             "dt": DT,
-            "max_episode_length": MAX_EPISODE_LENGTH,
+            "max_episode_length": MAX_EP_STEPS,
             "dyn_noise_std": DYN_NOISE_STD,
             "state_limits_quat": STATE_LIMITS if STATE_LIMITS is not None else None,
             "state_limits_mrp": STATE_LIMITS_MRP.tolist() if STATE_LIMITS_MRP is not None else None,
@@ -277,7 +286,7 @@ def get_config() -> dict:
             "layers": LAYERS,
         },
         "mpc": {
-            "horizon": HORIZON,
+            "horizon": MPC_HORIZON,
         },
         "training": {
             "seed": SEED,
@@ -507,7 +516,7 @@ def train_iteration(env: SpacecraftEnvJax,
                     opt_state: optax.OptState,
                     key: jax.random.PRNGKey,
                     num_trajectories: int,
-                    max_episode_length: int,
+                    max_ep_steps: int,
                     num_gradient_steps: int,
                     batch_size: int,
                     beta_decay: float,
@@ -520,7 +529,7 @@ def train_iteration(env: SpacecraftEnvJax,
                                                 expert_policy,
                                                 key,
                                                 beta,
-                                                max_episode_length,
+                                                max_ep_steps,
                                                 num_trajectories,
                                                 replan_frequency)
     # Debug: Check trajectory shapes before adding
@@ -564,7 +573,7 @@ def evaluate(env: SpacecraftEnvJax,
 
 
 def evaluate(controller: DiffMPCController, 
-            max_steps: int,
+            max_ep_steps: int,
             num_episodes: int, 
             key: jax.random.PRNGKey):
 
@@ -578,7 +587,7 @@ def evaluate(controller: DiffMPCController,
     # Make env
     env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMS,
                             dt=DT,
-                            max_env_steps=max_steps,
+                            max_ep_steps=max_ep_steps,
                             state_limits=STATE_LIMITS,
                             control_limits=CONTROL_LIMITS,
                             max_torque=MAX_TORQUE,
@@ -597,7 +606,7 @@ def evaluate(controller: DiffMPCController,
                                                 expert_policy=dummy_expert,
                                                 key=key,
                                                 beta=0,
-                                                max_ep_steps=max_steps,
+                                                max_ep_steps=max_ep_steps,
                                                 n_trajectories=num_episodes)
 
     print("Evaluation Done")
@@ -647,7 +656,7 @@ def learn(env: SpacecraftEnvJax,
           key: jax.random.PRNGKey,
           num_iterations: int,
           num_trajectories: int,
-          max_episode_length: int,
+          max_ep_steps: int,
           num_gradient_steps: int,
           batch_size: int,
           beta_decay: float,
@@ -691,7 +700,7 @@ def learn(env: SpacecraftEnvJax,
                                                                                      opt_state,
                                                                                      key,
                                                                                      num_trajectories,
-                                                                                     max_episode_length,
+                                                                                     max_ep_steps,
                                                                                      num_gradient_steps,
                                                                                      batch_size,
                                                                                      beta_decay,
@@ -715,9 +724,9 @@ def learn(env: SpacecraftEnvJax,
             save_il_model(controller, replay_buffer, opt_state, beta, itr, key, checkpoint_path)
 
         # Evaluate
-        # if itr % evaluate_freq == 0:
-        #     key, subkey = jax.random.split(key)
-        #     evaluate(controller, max_episode_length, num_eval_eps, subkey)
+        if itr % evaluate_freq == 0:
+            key, subkey = jax.random.split(key)
+            evaluate(controller, max_ep_steps, num_eval_eps, subkey)
 
     return controller, replay_buffer, opt_state, beta, key
 
@@ -768,7 +777,7 @@ def main():
     # Make the env
     env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMS,
                            dt=DT,
-                           max_env_steps=MAX_EPISODE_LENGTH,
+                           max_ep_steps=MAX_EP_STEPS,
                            state_limits=STATE_LIMITS,
                            control_limits=CONTROL_LIMITS,
                            max_torque=MAX_TORQUE,
@@ -800,13 +809,13 @@ def main():
                                layers=LAYERS, 
                                activation=ACTIVATION, 
                                output_activation=OUTPUT_ACTIVATION, 
-                               output_horizon=OUTPUT_HORIZON, 
+                               qr_output_horizon=QR_OUTPUT_HORIZON, 
                                eps=NETWORK_EPSILON, 
                                decomposition_type=DECOMPOSITION_TYPE)
 
 
     # Initialize controller
-    controller = DiffMPCController(network,HORIZON,DT,STATE_LIMITS_MRP,CONTROL_LIMITS_TORQUE, DYNAMICS_PARAMS)
+    controller = DiffMPCController(network,MPC_HORIZON,DT,STATE_LIMITS_MRP,CONTROL_LIMITS_TORQUE, DYNAMICS_PARAMS)
 
     
     # Initialize optimizer
@@ -820,7 +829,7 @@ def main():
                                 obs_dim=network.nx,
                                 state_dim=network.nx,
                                 action_dim=network.nu,
-                                horizon=HORIZON)
+                                horizon=MPC_HORIZON)
 
     # Load expert policy
     rl_path = os.path.join(RL_SAVE_PATH, "final_model.zip")
@@ -843,7 +852,7 @@ def main():
                                                             key,
                                                             num_iterations=NUM_ITERATIONS,
                                                             num_trajectories=NUM_TRAJECTORIES,
-                                                            max_episode_length=MAX_EPISODE_LENGTH,
+                                                            max_ep_steps=MAX_EP_STEPS,
                                                             num_gradient_steps=NUM_GRADIENT_STEPS,
                                                             batch_size=BATCH_SIZE,
                                                             beta_decay=BETA_DECAY,
@@ -870,7 +879,7 @@ def main():
     # eqx.tree_serialise_leaves(optimizer_state_save_path, optimizer_state)
 
     # Do evaluations
-    evaluate(controller, max_steps=MAX_EPISODE_LENGTH, num_episodes=100, key=key)
+    evaluate(controller, max_ep_steps=MAX_EP_STEPS, num_episodes=100, key=key)
 
 
 def dry_test():
@@ -881,7 +890,7 @@ def dry_test():
     # Make the env
     env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMS,
                             dt=DT,
-                            max_env_steps=MAX_EPISODE_LENGTH,
+                            max_ep_steps=MAX_EP_STEPS,
                             state_limits=STATE_LIMITS,
                             control_limits=CONTROL_LIMITS,
                             max_torque=MAX_TORQUE,
@@ -912,12 +921,12 @@ def dry_test():
                                layers=LAYERS, 
                                activation='relu', 
                                output_activation='tanh', 
-                               output_horizon=1, 
+                               qr_output_horizon=1, 
                                eps=1e-3, 
                                decomposition_type='diagonal')
 
     controller = DiffMPCController(network,
-                                    horizon=10,
+                                    mpc_horizon=10,
                                     dt=DT,
                                     state_limits=STATE_LIMITS_MRP,
                                     control_limits=CONTROL_LIMITS_TORQUE,
@@ -947,7 +956,7 @@ def dry_test():
                                                             expert_policy=dummy_expert,
                                                             key=key,
                                                             beta=0,
-                                                            max_ep_steps=MAX_EPISODE_LENGTH,
+                                                            max_ep_steps=MAX_EP_STEPS,
                                                             n_trajectories=100)
 
     # Generate 10 trajs using controller and rl expert
@@ -956,7 +965,7 @@ def dry_test():
                                                     expert_policy=expert_policy,
                                                     key=key,
                                                     beta=1,
-                                                    max_ep_steps=MAX_EPISODE_LENGTH,
+                                                    max_ep_steps=MAX_EP_STEPS,
                                                     n_trajectories=100)
 
     # compute metrics
@@ -1007,13 +1016,13 @@ def test_jax_env():
                                 layers=LAYERS, 
                                 activation=ACTIVATION, 
                                 output_activation=OUTPUT_ACTIVATION, 
-                                output_horizon=OUTPUT_HORIZON, 
+                                qr_output_horizon=QR_OUTPUT_HORIZON, 
                                 eps=NETWORK_EPSILON, 
                                 decomposition_type=DECOMPOSITION_TYPE)
 
 
     # Initialize controller
-    controller = DiffMPCController(network,HORIZON,DT,STATE_LIMITS_MRP,CONTROL_LIMITS_TORQUE,DYNAMICS_PARAMS)
+    controller = DiffMPCController(network,MPC_HORIZON,DT,STATE_LIMITS_MRP,CONTROL_LIMITS_TORQUE,DYNAMICS_PARAMS)
 
     # rl policy
     rl_path = os.path.join(RL_SAVE_PATH, "final_model.zip")
@@ -1026,7 +1035,7 @@ def test_jax_env():
                                           expert_policy=expert_policy,
                                           key=key,
                                           beta=0,
-                                          max_ep_steps=MAX_EPISODE_LENGTH)
+                                          max_ep_steps=MAX_EP_STEPS)
     end = time.time()
 
     print("Time take for generating one trajectory: ", end-start)
@@ -1037,7 +1046,7 @@ def test_jax_env():
                                             expert_policy=expert_policy,
                                             key=key,
                                             beta=0,
-                                            max_ep_steps=MAX_EPISODE_LENGTH)
+                                            max_ep_steps=MAX_EP_STEPS)
     end = time.time()
     print("Time take for generating one trajectory AFTER jit compiling: ", end-start)
 
@@ -1048,7 +1057,7 @@ def test_jax_env():
                                                     expert_policy=expert_policy,
                                                     key=key,
                                                     beta=1.0,
-                                                    max_ep_steps=MAX_EPISODE_LENGTH,
+                                                    max_ep_steps=MAX_EP_STEPS,
                                                     n_trajectories=100)
     end = time.time()
     print("Time take for generating 10 trajectories AFTER jit compiling using vmap: ", end-start)
@@ -1061,7 +1070,7 @@ def test_jax_env():
                                                     expert_policy=expert_policy,
                                                     key=key,
                                                     beta=1.0,
-                                                    max_ep_steps=MAX_EPISODE_LENGTH,
+                                                    max_ep_steps=MAX_EP_STEPS,
                                                     n_trajectories=100)
     end = time.time()
     print("Time take for generating 10 trajectories AFTER jit compiling using vmap AFTER vmap jit compiles: ", end-start)
@@ -1073,7 +1082,7 @@ def test_jax_env():
     trajectories, key = collect_trajectory(env=vec_env,
                                             expert_policy=rl_model,
                                             controller=controller,
-                                            max_episode_length=MAX_EPISODE_LENGTH,
+                                            max_episode_length=MAX_EP_STEPS,
                                             beta=0.5,
                                             key=key)
     end = time.time()
