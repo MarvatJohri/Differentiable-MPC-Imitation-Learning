@@ -4,6 +4,7 @@ import sys
 import jax
 # jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
+import equinox as eqx
 import numpy as np
 
 import pandas as pd
@@ -19,6 +20,8 @@ from pathlib import Path
 
 from sbx import PPO
 from stable_baselines3.common.vec_env import VecNormalize
+
+from diffmpc_controller import DiffMPCController
 
 MAX_TORQUE = 5e-5
 
@@ -106,6 +109,38 @@ def make_dummy_controller(state_dim, action_dim):
         return jnp.zeros((action_dim,), dtype=jnp.float64), nom_traj, nom_cntrl
     return dummy_controller
 
+
+
+def load_controller(controller: DiffMPCController, checkpoint_file: str) -> DiffMPCController:
+    """Load network parameters from a checkpoint file into the controller."""
+    if not os.path.exists(checkpoint_file):
+        raise FileNotFoundError(f"Checkpoint file {checkpoint_file} does not exist.")
+    
+    checkpoint = eqx.tree_deserialise_leaves(checkpoint_file, {
+        "network_params": eqx.filter(controller.network, eqx.is_array)
+    })
+    
+    network_params = checkpoint["network_params"]
+    static_network = eqx.filter(controller.network, lambda x: not eqx.is_array(x))
+    new_network = eqx.combine(network_params, static_network)
+    
+    controller = eqx.tree_at(lambda c: c.network, controller, new_network)
+    
+    print(f"Network parameters loaded from {checkpoint_file}")
+    
+    return controller
+
+
+def save_controller(controller: DiffMPCController, checkpoint_file: str):
+    """Save network parameters from the controller to a checkpoint file."""
+    
+    checkpoint = {
+        "network_params": eqx.filter(controller.network, eqx.is_array)
+    }
+    
+    eqx.tree_serialise_leaves(checkpoint_file, checkpoint)
+    
+    print(f"Network parameters saved to {checkpoint_file}")
 
 
 

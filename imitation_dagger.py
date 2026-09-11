@@ -33,7 +33,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from simulation_env_simpler import SpacecraftEnv
 from replay_buffer import ReplayBuffer, init_buffer, add_trajectories_to_buffer, sample_from_buffer
-from mj_utils import make_dummy_controller, make_dummy_expert, compute_metrics, plot_metrics_bar, print_metrics, plot_metrics_comparison
+from mj_utils import make_dummy_controller, make_dummy_expert, compute_metrics, plot_metrics_bar, print_metrics, plot_metrics_comparison, load_controller, save_controller
 from diffmpc_controller import DiffMPCController, FeedForwardNetwork
 from simulation_env_jax import SpacecraftEnvJax, generate_trajectory, generate_n_trajectories
 from configs import ExpConfig, SpacecraftEnvConfig, DaggerHyperparameters
@@ -188,24 +188,6 @@ def setup_logging(log_dir: str, log_filename: str = "training.log") -> logging.L
 
 
 
-def load_network_params(controller: DiffMPCController, checkpoint_file: str) -> DiffMPCController:
-    """Load network parameters from a checkpoint file into the controller."""
-    if not os.path.exists(checkpoint_file):
-        raise FileNotFoundError(f"Checkpoint file {checkpoint_file} does not exist.")
-    
-    checkpoint = eqx.tree_deserialise_leaves(checkpoint_file, {
-        "network_params": eqx.filter(controller.network, eqx.is_array)
-    })
-    
-    network_params = checkpoint["network_params"]
-    static_network = eqx.filter(controller.network, lambda x: not eqx.is_array(x))
-    new_network = eqx.combine(network_params, static_network)
-    
-    controller = eqx.tree_at(lambda c: c.network, controller, new_network)
-    
-    print(f"Network parameters loaded from {checkpoint_file}")
-    
-    return controller
 
 
 def load_train_state(replay_buffer: ReplayBuffer, 
@@ -250,23 +232,14 @@ def load_il_model(controller: DiffMPCController,
         raise FileNotFoundError(f"Train state file {train_state_file} does not exist.")
 
     # Load network parameters
-    controller = load_network_params(controller, checkpoint_file)
+    controller = load_controller(controller, checkpoint_file)
     # Load train state
     replay_buffer, opt_state, beta, iteration, key = load_train_state(replay_buffer, opt_state, train_state_file)
 
     return controller, replay_buffer, opt_state, beta, iteration, key
 
 
-def save_network_params(controller: DiffMPCController, checkpoint_file: str):
-    """Save network parameters from the controller to a checkpoint file."""
-    
-    checkpoint = {
-        "network_params": eqx.filter(controller.network, eqx.is_array)
-    }
-    
-    eqx.tree_serialise_leaves(checkpoint_file, checkpoint)
-    
-    print(f"Network parameters saved to {checkpoint_file}")
+
 
 
 def save_train_state(replay_buffer: ReplayBuffer,
@@ -314,7 +287,7 @@ def save_il_model(controller: DiffMPCController,
         train_state_file = os.path.join(checkpoint_path, f"train_state_{iteration}_steps.eqx")
 
     # Save network parameters
-    save_network_params(controller, checkpoint_file)
+    save_controller(controller, checkpoint_file)
 
     # Save train state
     save_train_state(replay_buffer, opt_state, beta, iteration, key, train_state_file)
@@ -744,7 +717,7 @@ def main():
 
 
     # Save the final model and optimizer state
-    save_il_model(controller, replay_buffer, opt_state, beta, NUM_ITERATIONS, key, SAVE_PATH)
+    save_il_model(controller, replay_buffer, opt_state, beta, NUM_ITERATIONS, key, SAVE_PATH, final=True)
 
 
     # Do evaluations

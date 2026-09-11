@@ -13,12 +13,25 @@ from diff_mpc_functions import build_mpc_solver, get_A_data, get_P_csr_data
 from quaternion_functions import q_mul, q_to_mrp, mrp_to_q, quaternion_projection, q_left, skew, quaternion_jacobian
 # from propagate_functions import linearize_and_discretize_dynamics, dynamics_params, generate_nominal_trajectory
 
-from configs import SpacecraftEnvConfig
+from configs import SpacecraftEnvConfig, ControllerConfig
 
 import time
 
-DYNAMICS_PARAMS = SpacecraftEnvConfig().spacecraft_dynamics_parameters
-MAX_TORQUE = SpacecraftEnvConfig().max_torque
+env_config = SpacecraftEnvConfig()
+controller_config = ControllerConfig()
+
+
+DYNAMICS_PARAMS = env_config.spacecraft_dynamics_parameters
+MAX_TORQUE = env_config.max_torque
+CONTROL_LIMITS = env_config.control_limits
+STATE_LIMITS_MRP = env_config.state_limits_mrp
+DT = env_config.dt
+
+MPC_HORIZON = controller_config.mpc_horizon
+REPLAN_FREQUENCY = controller_config.replan_frequency
+DECOMPOSITION_TYPE = controller_config.decomposition_type
+QR_OUTPUT_HORIZON = controller_config.qr_output_horizon
+NETWORK_EPSILON = controller_config.network_epsilon
 
 
 
@@ -256,8 +269,12 @@ class DiffMPCController(eqx.Module):
 
 
 
-    def __init__(self, network: FeedForwardNetwork, mpc_horizon, dt,
-                 state_limits, control_limits,
+    def __init__(self, 
+                 network: FeedForwardNetwork, 
+                 mpc_horizon, 
+                 dt,
+                 state_limits, 
+                 control_limits,
                  dynamics_params = DYNAMICS_PARAMS):
 
         self.network = network

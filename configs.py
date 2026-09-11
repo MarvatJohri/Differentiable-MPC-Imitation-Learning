@@ -6,7 +6,7 @@ dict of all hyperparams used in models
 
 import jax.numpy as jnp
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 HERE = Path(__file__).parent
 ROOT = HERE.parent
@@ -21,7 +21,14 @@ SPACECRAFT_DYNAMICS_PARAMETERS = {
     "inertia": jnp.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
 }
 SPACECRAFT_DYNAMICS_PARAMETERS["inertia_inv"] = jnp.linalg.inv(SPACECRAFT_DYNAMICS_PARAMETERS["inertia"]) 
+STATE_LIMITS = jnp.asarray([[-1, 1]]*4 + [[-2,2]]*3, dtype=jnp.float64)
+STATE_LIMITS_MRP = jnp.asarray([[-180, 180]]*3 + [[-2,2]]*3, dtype=jnp.float64)
+CONTROL_LIMITS = jnp.asarray(jnp.array([[-1, 1]] * 3), dtype=jnp.float64)
+MAX_TORQUE = 5e-5
+CONTROL_LIMITS_TORQUE = jnp.asarray(jnp.array([[-MAX_TORQUE, MAX_TORQUE]] * 3), dtype=jnp.float64)
 
+NET_ARCH = [256, 256]
+DAGGER_LAYERS = [256, 256]
 
 
 @dataclass
@@ -43,8 +50,14 @@ class ExpConfig:
     ppo_resume_timesteps: int = 0
     dagger_resume_timesteps: int = 0
 
-    ppo_resume_model_path: str = ppo_base_save_path + f"/{ppo_experiment_name}" + "/checkpoints" + f"/model_{ppo_resume_timesteps}_steps.zip"
-    dagger_resume_model_path: str = dagger_base_save_path + f"/{dagger_experiment_name}" + "/checkpoints" + f"/model_{dagger_resume_timesteps}_steps.eqx"
+
+    ppo_resume_model_path: str = field(init=False)
+    dagger_resume_model_path: str = field(init=False)
+
+    def __post_init__(self):
+
+        self.ppo_resume_model_path: str = self.ppo_base_save_path + f"/{self.ppo_experiment_name}" + "/checkpoints" + f"/model_{self.ppo_resume_timesteps}_steps.zip"
+        self.dagger_resume_model_path: str = self.dagger_base_save_path + f"/{self.dagger_experiment_name}" + "/checkpoints" + f"/model_{self.dagger_resume_timesteps}_steps.eqx"
 
 
     seed: int = 42
@@ -52,28 +65,55 @@ class ExpConfig:
     # Evaluation stuff
     num_eval_eps: int = 100
 
+def _make_dynamics_params():
+    inertia = jnp.array([
+        [0.00125, 0.0001, 0.0001],
+        [0.0001, 0.00125, 0.0001],
+        [0.0001, 0.0001, 0.00125]
+    ])
+    return {
+        "mass": 0.75,
+        "inertia": inertia,
+        "inertia_inv": jnp.linalg.inv(inertia),
+    }
+
 
 @dataclass
 class SpacecraftEnvConfig:
     
-    spacecraft_dynamics_parameters: dict = SPACECRAFT_DYNAMICS_PARAMETERS
+    # spacecraft_dynamics_parameters: dict = SPACECRAFT_DYNAMICS_PARAMETERS
     dt: float = 0.1
     max_ep_steps: int = 1500
-    state_limits: jnp.ndarray = jnp.asarray([[-1, 1]]*4 + [[-2,2]]*3, dtype=jnp.float64)
-    state_limits_mrp: jnp.ndarray = jnp.array([[-180, 180]]*3 + [[-2,2]]*3)
-    control_limits: jnp.ndarray = jnp.asarray(jnp.array([[-1, 1]] * 3), dtype=jnp.float64)
-    max_torque: float = 5e-5
-    control_limits_torque: jnp.ndarray = jnp.asarray(jnp.array([[-max_torque, max_torque]] * 3), dtype=jnp.float64)
+    state_limits: jnp.ndarray = field(default_factory=lambda: STATE_LIMITS)
+    state_limits_mrp: jnp.ndarray = field(default_factory=lambda: STATE_LIMITS_MRP)
+    control_limits: jnp.ndarray = field(default_factory=lambda: CONTROL_LIMITS)
+    max_torque: float = MAX_TORQUE
+    control_limits_torque: jnp.ndarray = field(default_factory=lambda: CONTROL_LIMITS_TORQUE)
     dyn_noise_std: float = 1e-6
-    theta_threshold: float = jnp.deg2rad(15.0)
-    omega_threshold: float = jnp.deg2rad(5.0)
-    theta_stability_tol: float = jnp.deg2rad(10.0)
-    omega_stability_tol: float = jnp.deg2rad(5.0)
+    theta_threshold: float = float(jnp.deg2rad(15.0))
+    omega_threshold: float = float(jnp.deg2rad(5.0))
+    theta_stability_tol: float = float(jnp.deg2rad(10.0))
+    omega_stability_tol: float = float(jnp.deg2rad(5.0))
     theta_threshold_reward: float = 10.0
     goal_reward: float = 50.0
     omega_fail_penalty: float = 50.0
     omega_penalty: float = 0.5
     action_penalty: float = 0.1
+
+    spacecraft_dynamics_parameters: dict = field(default_factory=lambda: SPACECRAFT_DYNAMICS_PARAMETERS)
+
+
+
+@dataclass
+class ControllerConfig:
+
+    nx: int = 7
+    nu: int = 3
+    mpc_horizon: int = 10
+    replan_frequency: int = 1
+    decomposition_type: str = 'diagonal'
+    qr_output_horizon: int = 1
+    network_epsilon: float = 1e-3
 
 
 
@@ -81,7 +121,7 @@ class SpacecraftEnvConfig:
 class PPOHyperparameters:
 
     policy_type: str = 'MlpPolicy'
-    net_arch: list = [256, 256]
+    net_arch: list = field(default_factory=lambda: NET_ARCH)
     learning_rate: float = 1e-3
     learning_rate_schedule: str = 'constant'
     learning_rate_final: float = 1e-5
@@ -102,7 +142,7 @@ class PPOHyperparameters:
 @dataclass
 class DaggerHyperparameters:
     
-    layers: list = [256, 256]
+    layers: list = field(default_factory=lambda: DAGGER_LAYERS)
     learning_rate: float = 3e-4
     learning_rate_schedule: str = 'constant'
     learning_rate_final: float = 1e-5
