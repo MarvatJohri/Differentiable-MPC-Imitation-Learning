@@ -4,48 +4,12 @@ Code for Imitation Learning agent implemented using differentiable MPC
 
 """
 
-from pathlib import Path
 import sys
 import os
 from datetime import datetime
 import time
 from typing import Callable, Dict, List, Tuple
-import json
 import logging
-
-
-
-
-# =============================================================================
-# PATHS
-# =============================================================================
-
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
-
-PPO_BASE_SAVE_PATH = str(HERE / "ppo_results")
-PPO_BASE_LOG_PATH = str(HERE / "ppo_logs")
-
-DAGGER_BASE_SAVE_PATH = str(HERE / "dagger_results")
-# IL_BASE_LOG_PATH = str(HERE / "imitation_logs")
-
-# Ensure directories exist
-
-os.makedirs(DAGGER_BASE_SAVE_PATH, exist_ok=True)
-# os.makedirs(IL_BASE_LOG_PATH, exist_ok=True)
-
-# URANUS_MPC_PATH = str((ROOT / "uranus-mpc").resolve())
-# sys.path.append(URANUS_MPC_PATH)
-
-# from utils.propagate import TrajectoryGenerator
-# from dynamics.spacecraft_dynamics import SpacecraftDynamics
-# from dynamics.planetary_params import Earth, Uranus
-# from utils.learning import load_model
-
-
-
-
-
 
 
 
@@ -63,110 +27,85 @@ import optax
 
 from sbx import PPO
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 # Import my stuff
 
 from simulation_env_simpler import SpacecraftEnv
-from replay_buffer import ReplayBuffer, init_buffer, add_trajectories_to_buffer, sample_from_buffer, can_sample_buffer
-from mj_utils import make_dummy_controller, make_dummy_expert, compute_metrics, plot_metrics_bar, print_metrics, compute_metrics_multi, plot_metrics_comparison
-# from propagate_functions import sample_episode_context, generate_trajectory
-from diffmpc_controller import DiffMPCController, FeedForwardNetwork, build_mpc_solver
+from replay_buffer import ReplayBuffer, init_buffer, add_trajectories_to_buffer, sample_from_buffer
+from mj_utils import make_dummy_controller, make_dummy_expert, compute_metrics, plot_metrics_bar, print_metrics, plot_metrics_comparison
+from diffmpc_controller import DiffMPCController, FeedForwardNetwork
 from simulation_env_jax import SpacecraftEnvJax, generate_trajectory, generate_n_trajectories
-from config import configs
+from configs import ExpConfig, SpacecraftEnvConfig, DaggerHyperparameters
+
+
+exp_config = ExpConfig()
+hyperparameters = DaggerHyperparameters()
+env_config = SpacecraftEnvConfig()
+
+
+# Load Hyperparameters
+
+PPO_BASE_SAVE_PATH = exp_config.ppo_base_save_path
+PPO_BASE_LOG_PATH = exp_config.ppo_base_log_path
+
+DAGGER_BASE_SAVE_PATH = exp_config.dagger_base_save_path
+
+PPO_EXPERIMENT_NAME = exp_config.ppo_experiment_name
+DAGGER_EXPERIMENT_NAME = exp_config.dagger_experiment_name
+DAGGER_EXPERIMENT_NOTES = exp_config.dagger_experiment_notes
+
+RESUME = exp_config.resume_dagger_training
+
+SEED = exp_config.seed
+
+
+
+DYNAMICS_PARAMS = env_config.spacecraft_dynamics_parameters
+DT = env_config.dt
+DYN_NOISE_STD = env_config.dyn_noise_std
+MAX_EP_STEPS = env_config.max_ep_steps
+STATE_LIMITS = env_config.state_limits
+STATE_LIMITS_MRP = env_config.state_limits_mrp
+MAX_TORQUE = env_config.max_torque
+CONTROL_LIMITS = env_config.control_limits
+CONTROL_LIMITS_TORQUE = env_config.control_limits_torque
+THETA_THRESHOLD = env_config.theta_threshold
+OMEGA_THRESHOLD = env_config.omega_threshold
+OMEGA_PENALTY = env_config.omega_penalty
+ACTION_PENALTY = env_config.action_penalty
+GOAL_REWARD = env_config.goal_reward
+THETA_THRESHOLD_REWARD = env_config.theta_threshold_reward
+THETA_STABILITY_TOL = env_config.theta_stability_tol
+OMEGA_STABILITY_TOL = env_config.omega_stability_tol
 
 
 
 
+LAYERS = hyperparameters.layers
+ACTIVATION = hyperparameters.activation
+OUTPUT_ACTIVATION = hyperparameters.output_activation
+NETWORK_EPSILON = hyperparameters.network_epsilon
+DECOMPOSITION_TYPE = hyperparameters.decomposition_type
+QR_OUTPUT_HORIZON = hyperparameters.qr_output_horizon
+MPC_HORIZON = hyperparameters.mpc_horizon
+REPLAN_FREQUENCY = hyperparameters.replan_frequency
+LEARNING_RATE = hyperparameters.learning_rate
+LEARNING_RATE_FINAL = hyperparameters.learning_rate_final
+LEARNING_RATE_SCHEDULE = hyperparameters.learning_rate_schedule
+BATCH_SIZE = hyperparameters.batch_size
+BETA_DECAY = hyperparameters.beta_decay
+NUM_EPS_STORED = hyperparameters.num_eps_stored
+MAX_BUFFER_SIZE = hyperparameters.max_buffer_size
+NUM_ITERATIONS = hyperparameters.num_iterations
+NUM_TRAJECTORIES = hyperparameters.num_trajectories
+NUM_GRADIENT_STEPS = hyperparameters.num_gradient_steps
+LOG_EVERY = hyperparameters.log_every
+CHECKPOINT_FREQUENCY = hyperparameters.checkpoint_frequency
+EVAL_FREQUENCY = hyperparameters.eval_frequency
+NUM_EVAL_EPS = hyperparameters.num_eval_eps
 
 
-
-
-
-
-
-# TODO: Consider making this packaage more modular, 
-# with separate files for the network, the MPC solver, and the agent class.
-# Consider writing a config file to contain all hyperparams
-# utils file to contain utility functions like tree_add, tree_div, etc.
-
-
-# Experiment params
-PPO_EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
-DAGGER_EXPERIMENT_NAME = "spacecraft_ppo_imitation_dagger_v1_torque_only_experiment1"
-DAGGER_EXPERIMENT_NOTES = "Initial imitation learning on Earth orbit"
-
-
-DYNAMICS_PARAMS = {
-    "mass": 0.75,
-    "inertia": jnp.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
-}
-DYNAMICS_PARAMS["inertia_inv"] = jnp.linalg.inv(DYNAMICS_PARAMS["inertia"])
-
-# Environment params
-DT = 0.1                         # Simulation timestep
-DYN_NOISE_STD = 1e-6             # Dynamics noise
-MAX_EP_STEPS = 1500         # Max episode length
-
-
-# State/action limits
-STATE_LIMITS = [[-1, 1]] * 4 + [[-2, 2]] * 3  # [quat, omega]
-STATE_LIMITS_MRP = jnp.array([[-180, 180]]*3 + [[-2,2]]*3)
-CONTROL_LIMIT_SCALE = 1        # Scales [-1, 1] control limits
-MAX_TORQUE = 5e-5
-CONTROL_LIMITS = jnp.array([[-CONTROL_LIMIT_SCALE, CONTROL_LIMIT_SCALE]] * 3, dtype=jnp.float64) # [normalized torque]
-CONTROL_LIMITS_TORQUE = jnp.array([[-MAX_TORQUE, MAX_TORQUE]] * 3, dtype=jnp.float64) # [torque]
-
-# Reward shaping
-THETA_THRESHOLD = np.deg2rad(15.0)  # Convert to radians
-OMEGA_THRESHOLD = np.deg2rad(5.0)                 # Angular velocity tolerance (rad/s)
-OMEGA_PENALTY = 0.5               # Penalty weight for omega error
-ACTION_PENALTY = 0.1              # Penalty weight for action magnitude
-GOAL_REWARD = 50.0              # Bonus for reaching goal
-THETA_THRESHOLD_REWARD = 10.0        # Bonus for staying within theta threshold
-
-
-
-# Imitation learning hyperparameters
-LEARNING_RATE = 3e-4
-LEARNING_RATE_FINAL = 1e-5  
-LEARNING_RATE_SCHEDULE = "constant"  # constant, linear, cosine annealing
-BATCH_SIZE = 512
-
-BETA_DECAY = 0.95                       # Beta decay for DAgger
-NUM_EPS_STORED = 100
-MAX_BUFFER_SIZE = MAX_EP_STEPS * NUM_EPS_STORED                # Replay buffer size
-NUM_ITERATIONS = 100
-NUM_TRAJECTORIES = 10
-NUM_GRADIENT_STEPS = 100
-
-# Imitation Learning Architecture
-LAYERS = [256, 256]                  # Hidden layers for the neural network
-# TOTAL_TIMESTEPS = 1_000_000
-ACTIVATION = "relu"
-OUTPUT_ACTIVATION = "tanh"
-NETWORK_EPSILON = 1e-3
-DECOMPOSITION_TYPE = "diagonal"  # diagonal, full, cholesky
-QR_OUTPUT_HORIZON = 1
-MPC_HORIZON = 10
-
-
-LOG_EVERY = 1
-CHECKPOINT_FREQUENCY = 10
-
-EVAL_FREQUENCY = 10
-NUM_EVAL_EPS = 100
-
-
-
-# RNG Seed
-SEED = 42
-
-
-
-# =============================================================================
-# DERIVED PATHS (don't edit)
-# =============================================================================
 
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 RL_SAVE_PATH = os.path.join(PPO_BASE_SAVE_PATH, PPO_EXPERIMENT_NAME)
@@ -182,16 +121,16 @@ CHECKPOINT_PATH = os.path.join(SAVE_PATH, "checkpoints")
 RESUME_TRAINING = False
 RESUME_ITERATIONS = 5
 RESUME_CHECKPOINT_FILE = os.path.join(CHECKPOINT_PATH, f"model_{RESUME_ITERATIONS}_steps.eqx")
+RESUME_TRAIN_STATE_FILE = os.path.join(CHECKPOINT_PATH, f"train_state_{RESUME_ITERATIONS}_steps.eqx")
 
 os.makedirs(SAVE_PATH, exist_ok=True)
 # os.makedirs(LOG_PATH, exist_ok=True)
 os.makedirs(CHECKPOINT_PATH, exist_ok=True)
 # os.makedirs(TENSORBOARD_PATH, exist_ok=True)
+# Ensure directories exist
 
+os.makedirs(DAGGER_BASE_SAVE_PATH, exist_ok=True)
 
-# RED ALERT
-
-# CONTROLLER NOMINAL TRAJECTORIES PROBABLY DO NEED NOISE FOR PLANNING
 
 
 
@@ -202,7 +141,7 @@ def make_env(dynamics_params: Dict, seed: int = None):
         dt=DT,
         max_ep_steps=MAX_EP_STEPS,
         state_limits=np.array(STATE_LIMITS),
-        control_limits=CONTROL_LIMIT_SCALE * np.array([[-1, 1]] * 3),
+        control_limits=CONTROL_LIMITS,
         max_torque=MAX_TORQUE,
         dyn_noise_std=DYN_NOISE_STD,
         theta_threshold=THETA_THRESHOLD,
@@ -249,71 +188,50 @@ def setup_logging(log_dir: str, log_filename: str = "training.log") -> logging.L
 
 
 
+def load_network_params(controller: DiffMPCController, checkpoint_file: str) -> DiffMPCController:
+    """Load network parameters from a checkpoint file into the controller."""
+    if not os.path.exists(checkpoint_file):
+        raise FileNotFoundError(f"Checkpoint file {checkpoint_file} does not exist.")
+    
+    checkpoint = eqx.tree_deserialise_leaves(checkpoint_file, {
+        "network_params": eqx.filter(controller.network, eqx.is_array)
+    })
+    
+    network_params = checkpoint["network_params"]
+    static_network = eqx.filter(controller.network, lambda x: not eqx.is_array(x))
+    new_network = eqx.combine(network_params, static_network)
+    
+    controller = eqx.tree_at(lambda c: c.network, controller, new_network)
+    
+    print(f"Network parameters loaded from {checkpoint_file}")
+    
+    return controller
 
-def get_config() -> dict:
-    """Return all config as a dictionary for saving."""
-    return {
-        "experiment": {
-            "name": DAGGER_EXPERIMENT_NAME,
-            "notes": DAGGER_EXPERIMENT_NOTES,
-            "timestamp": TIMESTAMP,
-        },
-        "environment": {
-            "dt": DT,
-            "max_episode_length": MAX_EP_STEPS,
-            "dyn_noise_std": DYN_NOISE_STD,
-            "state_limits_quat": STATE_LIMITS if STATE_LIMITS is not None else None,
-            "state_limits_mrp": STATE_LIMITS_MRP.tolist() if STATE_LIMITS_MRP is not None else None,
-            "control_limits": CONTROL_LIMITS.tolist() if CONTROL_LIMITS is not None else None,
-            "control_limits_torque": CONTROL_LIMITS_TORQUE.tolist() if CONTROL_LIMITS_TORQUE is not None else None,
-            "theta_threshold": THETA_THRESHOLD,
-            "omega_threshold": OMEGA_THRESHOLD,
-            "theta_threshold_reward": THETA_THRESHOLD_REWARD,
-            "omega_penalty": OMEGA_PENALTY,
-            "action_penalty": ACTION_PENALTY,
-            "goal_reward": GOAL_REWARD,
-        },
-        "dagger": {
-            "num_iterations": NUM_ITERATIONS,
-            "num_trajectories": NUM_TRAJECTORIES,
-            "num_gradient_steps": NUM_GRADIENT_STEPS,
-            "batch_size": BATCH_SIZE,
-            "learning_rate": LEARNING_RATE,
-            "beta_decay": BETA_DECAY,
-            "max_buffer_size": MAX_BUFFER_SIZE,
-        },
-        "network": {
-            "layers": LAYERS,
-        },
-        "mpc": {
-            "horizon": MPC_HORIZON,
-        },
-        "training": {
-            "seed": SEED,
-            "log_every": LOG_EVERY,
-            "checkpoint_frequency": CHECKPOINT_FREQUENCY,
-        },
-        "paths": {
-            "expert_model": RL_SAVE_PATH,
-            "checkpoint_dir": CHECKPOINT_PATH,
-        },
-        "resume": {
-            "resumed": RESUME_TRAINING,
-            "resumed_from": RESUME_CHECKPOINT_FILE,
-        },
+
+def load_train_state(replay_buffer: ReplayBuffer, 
+                     opt_state: optax.OptState, 
+                     checkpoint_file: str) -> Tuple[ReplayBuffer, optax.OptState, float, int, jax.random.PRNGKey]:
+
+
+    if not os.path.exists(checkpoint_file):
+        raise FileNotFoundError(f"Checkpoint file {checkpoint_file} does not exist.")
+
+    train_state = {
+        "iteration": jnp.array(0),
+        "beta": jnp.array(1.0),
+        "replay_buffer": replay_buffer,
+        "replay_buffer_max_size": jnp.array(replay_buffer.max_size),
+        "opt_state": opt_state,
+        "key": jax.random.PRNGKey(0),
     }
 
-
-def save_config(config: dict, path: str):
-    """Save config to JSON file."""
-    os.makedirs(path, exist_ok=True)
-    config_file = os.path.join(path, "config.json")
-    with open(config_file, "w") as f:
-        json.dump(config, f, indent=2)
-    print(f"[INFO] Config saved to: {config_file}")
+    train_state = eqx.tree_deserialise_leaves(checkpoint_file, train_state)
+    replay_buffer = train_state["replay_buffer"].replace(max_size=int(train_state["replay_buffer_max_size"]))
 
 
+    print(f"Train state loaded from {checkpoint_file} at iteration {train_state['iteration']}")
 
+    return replay_buffer, train_state["opt_state"], float(train_state["beta"]), int(train_state["iteration"]), train_state["key"]
 
 
 
@@ -321,41 +239,56 @@ def save_config(config: dict, path: str):
 def load_il_model(controller: DiffMPCController,
                     replay_buffer: ReplayBuffer,
                     opt_state: optax.OptState,
-                    checkpoint_file: str):
+                    checkpoint_file: str,
+                    train_state_file: str):
 
 
     if not os.path.exists(checkpoint_file):
         raise FileNotFoundError(f"Checkpoint file {checkpoint_file} does not exist.")
 
-    checkpoint = {
-            "iteration": jnp.array(0),
-            "network_params": eqx.filter(controller.network, eqx.is_array),
-            "beta": jnp.array(1.0),
-            "replay_buffer": replay_buffer,
-            "replay_buffer_max_size": jnp.array(replay_buffer.max_size),
-            "opt_state": opt_state,
-            "key": jax.random.PRNGKey(0),
-        }
+    if not os.path.exists(train_state_file):
+        raise FileNotFoundError(f"Train state file {train_state_file} does not exist.")
 
-    checkpoint = eqx.tree_deserialise_leaves(checkpoint_file, checkpoint)
-
-    # controller = eqx.tree_at(lambda c: c.network, controller, checkpoint["network_params"])
-    network_params = checkpoint["network_params"]
-    static_network = eqx.filter(controller.network, lambda x: not eqx.is_array(x))
-    new_network = eqx.combine(network_params, static_network)
-    # controller = eqx.tree_at(lambda c: eqx.filter(c.network, eqx.is_array), controller, network_params)
-    controller = eqx.tree_at(lambda c: c.network, controller, new_network)
-
-    replay_buffer = checkpoint["replay_buffer"]
-    replay_buffer = replay_buffer.replace(max_size=int(checkpoint["replay_buffer_max_size"]))
-    opt_state = checkpoint["opt_state"]
-    beta = checkpoint["beta"]
-    iteration = checkpoint["iteration"]
-    key = checkpoint["key"]
-
-    print(f"Checkpoint loaded from {checkpoint_file} at iteration {iteration}")
+    # Load network parameters
+    controller = load_network_params(controller, checkpoint_file)
+    # Load train state
+    replay_buffer, opt_state, beta, iteration, key = load_train_state(replay_buffer, opt_state, train_state_file)
 
     return controller, replay_buffer, opt_state, beta, iteration, key
+
+
+def save_network_params(controller: DiffMPCController, checkpoint_file: str):
+    """Save network parameters from the controller to a checkpoint file."""
+    
+    checkpoint = {
+        "network_params": eqx.filter(controller.network, eqx.is_array)
+    }
+    
+    eqx.tree_serialise_leaves(checkpoint_file, checkpoint)
+    
+    print(f"Network parameters saved to {checkpoint_file}")
+
+
+def save_train_state(replay_buffer: ReplayBuffer,
+                        opt_state: optax.OptState,
+                        beta: float,
+                        iteration: int,
+                        key: jax.random.PRNGKey,
+                        train_state_file: str):
+
+
+    train_state = {
+        "iteration": jnp.array(iteration),
+        "beta": jnp.array(beta),
+        "replay_buffer": replay_buffer,
+        "replay_buffer_max_size": jnp.array(replay_buffer.max_size),
+        "opt_state": opt_state,
+        "key": key,
+    }
+
+    eqx.tree_serialise_leaves(train_state_file, train_state)
+
+    print(f"Train state saved at iteration {iteration} to {train_state_file}")
 
 
 
@@ -374,24 +307,18 @@ def save_il_model(controller: DiffMPCController,
 
     if final:
         checkpoint_file = os.path.join(checkpoint_path, f"final_model.eqx")
+        train_state_file = os.path.join(checkpoint_path, f"final_train_state.eqx")
     else:
         # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         checkpoint_file = os.path.join(checkpoint_path, f"model_{iteration}_steps.eqx")
+        train_state_file = os.path.join(checkpoint_path, f"train_state_{iteration}_steps.eqx")
 
-    checkpoint = {
-        "iteration": jnp.array(iteration),
-        "network_params": eqx.filter(controller.network, eqx.is_array),
-        "beta": jnp.array(beta),
-        "replay_buffer": replay_buffer,
-        "replay_buffer_max_size": jnp.array(replay_buffer.max_size),
-        "opt_state": opt_state,
-        "key": key,
-    }
+    # Save network parameters
+    save_network_params(controller, checkpoint_file)
 
+    # Save train state
+    save_train_state(replay_buffer, opt_state, beta, iteration, key, train_state_file)
 
-    eqx.tree_serialise_leaves(checkpoint_file, checkpoint)
-
-    print(f"Checkpoint saved at iteration {iteration} to {checkpoint_file}")
 
 
 
@@ -482,30 +409,6 @@ def train_loop(controller: DiffMPCController,
 
 
 
-# @eqx.filter_jit
-# def train_step(controller: DiffMPCController,
-#                optimizer: optax.GradientTransformation,
-#                opt_state: optax.OptState,
-#                replay_buffer: ReplayBuffer,
-#                batch_size: int,
-#                key: jax.random.PRNGKey):
-
-
-#     key, subkey = jax.random.split(key)
-#     data_batch = sample_from_buffer(replay_buffer, subkey, batch_size)
-
-#     loss, grad = loss_and_grad(controller, data_batch)
-
-#     network_grad = grad.network
-
-#     updates, opt_state = optimizer.update(network_grad, opt_state, controller.network)
-
-#     new_network = eqx.apply_updates(controller.network, updates)
-#     controller = eqx.tree_at(lambda c: c.network, controller, new_network)
-
-#     return controller, opt_state, loss, key
-
-
 @eqx.filter_jit
 def train_iteration(env: SpacecraftEnvJax,
                     controller: DiffMPCController,
@@ -532,13 +435,6 @@ def train_iteration(env: SpacecraftEnvJax,
                                                 max_ep_steps,
                                                 num_trajectories,
                                                 replan_frequency)
-    # Debug: Check trajectory shapes before adding
-    # for i, traj in enumerate(trajectories):
-    #     print(f"Trajectory {i}:")
-    #     print(f"  obs: {traj['obs'].shape}")
-    #     print(f"  nominal_traj: {traj['nominal_traj'].shape}")
-    #     print(f"  nominal_cntrl: {traj['nominal_cntrl'].shape}")
-
 
 
     # Add trajectories to buffer
@@ -546,12 +442,7 @@ def train_iteration(env: SpacecraftEnvJax,
 
     # Do training updates
     controller, opt_state, mean_loss, key = train_loop(controller, optimizer, opt_state, replay_buffer, num_gradient_steps, batch_size, key)
-    # losses = []
-    # for _ in range(num_gradient_steps):
-    #     controller, opt_state, loss, key = train_step(controller, optimizer, opt_state, replay_buffer, batch_size, key)
-    #     losses.append(loss)
 
-    # mean_loss = jnp.mean(jnp.array(losses))
 
     # Update beta
     beta = beta * beta_decay
@@ -559,16 +450,6 @@ def train_iteration(env: SpacecraftEnvJax,
     return controller, replay_buffer, opt_state, mean_loss, beta, key
 
 
-def evaluate(env: SpacecraftEnvJax,
-             controller: DiffMPCController, 
-             expert_policy: PPO,
-             max_steps: int,
-             num_episodes: int, 
-             key: jax.random.PRNGKey):
-
-    print("Evaluating Imitation Learning Agent")
-
-    
 
 
 
@@ -624,10 +505,6 @@ def evaluate(controller: DiffMPCController,
     angle_hist_max = 30
     omega_hist_max = 15
 
-    # _ = system.plot_costs(trajectories, target_states, plot_stats=True)
-
-    # system.plot_violin_and_bar(trajectories, target_states, angle_threshold=angle_threshold, omega_threshold=omega_threshold,angle_stability_tol=angle_tol, omega_stability_tol=omega_tol, tail_length=tail_length, verbose=True)
-
 
     # compute metrics
     df = compute_metrics(trajectories,
@@ -667,12 +544,11 @@ def learn(env: SpacecraftEnvJax,
           evaluate_freq: int,
           num_eval_eps: int,
           replan_frequency: int = 1,
-          resume: bool = False):
+          resume: bool = False,
+          resume_checkpoint_file: str = None,
+          resume_train_state_file: str = None):
 
 
-
-    t_so_far = 0
-    start_time = time.time()
 
     # Initialize Beta
     beta = 1
@@ -681,7 +557,7 @@ def learn(env: SpacecraftEnvJax,
 
     itrs_done = 0
     if resume:
-        controller, replay_buffer, opt_state, beta, iteration, key = load_il_model(controller, replay_buffer, opt_state, RESUME_CHECKPOINT_FILE)
+        controller, replay_buffer, opt_state, beta, iteration, key = load_il_model(controller, replay_buffer, opt_state, resume_checkpoint_file, resume_train_state_file)
         itrs_done = iteration
         # Print stuff
         # print(f"Resuming training from iteration {itrs_done}, beta={beta}")
@@ -770,9 +646,7 @@ def get_expert_policy(expert_policy: PPO, vec_env: VecNormalize):
 
 def main():
 
-    # Save config
-    config = get_config()
-    save_config(config,SAVE_PATH)
+
 
     # Make the env
     env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMS,
@@ -861,22 +735,17 @@ def main():
                                                             checkpoint_path=CHECKPOINT_PATH,
                                                             logger=logger,
                                                             resume=RESUME_TRAINING,
+                                                            resume_checkpoint_file=RESUME_CHECKPOINT_FILE,
+                                                            resume_train_state_file=RESUME_TRAIN_STATE_FILE,
+                                                            replan_frequency=REPLAN_FREQUENCY,
                                                             evaluate_freq=EVAL_FREQUENCY,
                                                             num_eval_eps=NUM_EVAL_EPS)
 
 
 
-    # model, optimizer_state, beta, replay_buffer, t_so_far, key = learn(env, model, expert_policy, TOTAL_TIMESTEPS, optimizer, key)
-
     # Save the final model and optimizer state
     save_il_model(controller, replay_buffer, opt_state, beta, NUM_ITERATIONS, key, SAVE_PATH)
 
-    # # Save the model and optimizer state
-    # model_save_path = os.path.join(SAVE_PATH, "final_model.eqx")
-    # optimizer_state_save_path = os.path.join(SAVE_PATH, "final_optimizer_state.eqx")
-
-    # eqx.tree_serialise_leaves(model_save_path, model)
-    # eqx.tree_serialise_leaves(optimizer_state_save_path, optimizer_state)
 
     # Do evaluations
     evaluate(controller, max_ep_steps=MAX_EP_STEPS, num_episodes=100, key=key)
@@ -1076,19 +945,6 @@ def test_jax_env():
     print("Time take for generating 10 trajectories AFTER jit compiling using vmap AFTER vmap jit compiles: ", end-start)
 
 
-    # Also test collecting trajectories for training
-    # key = keys[0]
-    start = time.time()
-    trajectories, key = collect_trajectory(env=vec_env,
-                                            expert_policy=rl_model,
-                                            controller=controller,
-                                            max_episode_length=MAX_EP_STEPS,
-                                            beta=0.5,
-                                            key=key)
-    end = time.time()
-    print("Time take for collecting one trajectory not using jax stuff: ", end-start)
-
-    
     
 
 

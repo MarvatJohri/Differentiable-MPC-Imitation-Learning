@@ -22,38 +22,10 @@ os.environ['JAX_ENABLE_X64'] = 'false'
 # Import packages
 import numpy as np
 
-import time
-
 import jax
 import jax.numpy as jnp
-import jax.scipy as jsp
 import jax.random as jrandom
-import jax.extend.backend as jeb
-
-import matplotlib.pyplot as plt
-import seaborn as sns
-import marimo as mo
-import pdb
-import gc
-import pickle
-import pandas as pd
-
-import optax
-
-# from utils.propagate import TrajectoryGenerator, sample_initial_states
 from mj_utils import sample_state
-# from dynamics.quaternion_functions import S, q_left, q_conj, get_rotation, q_to_mrp
-# from utils.coord_transforms import coord
-# from utils.plotting import save_data_to_pd_df
-
-# from dynamics.base_dynamics import Dynamics
-# from dynamics.spacecraft_dynamics import SpacecraftDynamics
-# from dynamics.orbit_dynamics import OrbitDynamics
-# from dynamics.planetary_params import Earth, Uranus
-# from dynamics.magnetic_field import MagneticFieldModel
-
-# from utils.learning import Trainer, load_model, save_model
-
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -65,16 +37,8 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 jax.config.update("jax_default_matmul_precision", "highest") # required for vmap to work properly, weird bug
 # jax.config.update("jax_enable_x64", True) # enables 64-bit precision
 
-# Seaborn plotting style
-sns.set_theme(context='paper', style='whitegrid', font='serif', font_scale=1.5)
 
 jax.devices() # verify GPU is available
-
-DYNAMICS_PARAMETERS = {
-    "mass": 0.75,
-    "inertia": np.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
-}
-DYNAMICS_PARAMETERS["inertia_inv"] = np.linalg.inv(DYNAMICS_PARAMETERS["inertia"]) 
 
 
 class SpacecraftEnv(gym.Env):
@@ -147,9 +111,6 @@ class SpacecraftEnv(gym.Env):
         # q_err[0] is maintained positive and q_err is normalized
         # Thus use [0, 1] for q_err[0] and [-1, 1] for q_err[1:3]
         # omega_err worst case is [-2, 2] for each component, thus use [-4 ,4] for each component of omega_err
-
-        # Also pass in normalized magnetic field vector in observation space, which is [-1, 1] for each component
-
 
         obs_low = np.array([0, -1, -1, -1, -4, -4, -4], dtype=np.float32)
         obs_high = np.array([1, 1, 1, 1, 4, 4, 4], dtype=np.float32)

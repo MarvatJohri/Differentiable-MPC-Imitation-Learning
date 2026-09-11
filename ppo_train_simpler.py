@@ -3,143 +3,25 @@ Training script for SpacecraftEnv with PPO using SBX.
 """
 
 import os
-import json
 import random
-import sys
 from typing import Dict
 import numpy as np
 from datetime import datetime
-from pathlib import Path
 
 from sbx import PPO
 from stable_baselines3.common.callbacks import (
-    EvalCallback,
     CheckpointCallback,
     CallbackList,
 )
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from config import configs
-
-
-
-# =============================================================================
-# PATHS
-# =============================================================================
-
-# HERE = Path(__file__).resolve().parent
-# ROOT = HERE.parent
-
-# PPO_BASE_SAVE_PATH = str(HERE / "ppo_results")
-# PPO_BASE_LOG_PATH = str(HERE / "ppo_logs")
-
-# URANUS_MPC_PATH = str((ROOT / "uranus-mpc").resolve())
-
-
-
-# sys.path.insert(0, str((ROOT / "uranus-mpc").resolve()))
-# sys.path.insert(0, str((ROOT / "uranus-mpc" / "utils").resolve()))
-
-# Your environment imports - adjust as needed
-# from dynamics.base_dynamics import Dynamics
-# from dynamics.spacecraft_dynamics import SpacecraftDynamics
-# from dynamics.orbit_dynamics import OrbitDynamics
+from configs import ExpConfig, PPOHyperparameters, SpacecraftEnvConfig
 from simulation_env_simpler import SpacecraftEnv
-# from dynamics.planetary_params import Earth, Uranus
-
-# from utils.learning import load_model
-
-# =============================================================================
-# EXPERIMENT CONFIG - EDIT THIS SECTION
-# =============================================================================
-
-# Experiment params
-# PPO_EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
-# PPO_EXPERIMENT_NOTES = "Initial PPO training on Earth orbit"
-
-# DYNAMICS_PARAMETERS = {
-#     "mass": 0.75,
-#     "inertia": np.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
-# }
-# DYNAMICS_PARAMETERS["inertia_inv"] = np.linalg.inv(DYNAMICS_PARAMETERS["inertia"]) 
-
-# # Environment
-# DYN_NOISE_STD = 1e-6              # Standard deviation of dynamics noise
-# DT = 0.1                         # Simulation timestep
-
-# # State/action limits
-# STATE_LIMITS = [[-1, 1]] * 4 + [[-2, 2]] * 3  # [quat, omega]
-# CONTROL_LIMIT_SCALE = 1        # Scales [-1, 1] control limits
-
-# # Reward shaping
-# THETA_THRESHOLD = np.deg2rad(15.0)  
-# OMEGA_THRESHOLD = np.deg2rad(5.0)                 # Angular velocity tolerance (rad/s)
-# OMEGA_PENALTY = 0.5               # Penalty weight for omega error
-# ACTION_PENALTY = 0.1              # Penalty weight for action magnitude
-# GOAL_REWARD = 50.0              # Bonus for reaching goal
-
-
-# # PPO Hyperparameters
-# LEARNING_RATE = 1e-3
-# LEARNING_RATE_SCHEDULE = "constant"  # "constant" or "linear" or cosine
-# LEARNING_RATE_FINAL = 1e-5            # Minimum learning rate for linear schedule
-
-# MAX_EPISODE_STEPS = 1500          # Max steps per episode
-# N_ROLLOUTS = 3                      # Number of rollouts per update
-# N_STEPS = N_ROLLOUTS * MAX_EPISODE_STEPS  # Steps per rollout
-# BATCH_SIZE = 500                  # Minibatch size
-# N_EPOCHS = 10                    # SGD epochs per update
-# GAMMA = 0.99                     # Discount factor
-# GAE_LAMBDA = 0.95                # GAE lambda
-# CLIP_RANGE = 0.2                 # PPO clip range
-# ENT_COEF = 1e-2                  # Entropy coefficient
-# VF_COEF = 0.5                    # Value function coefficient
-# MAX_GRAD_NORM = 0.5              # Gradient clipping
-
-# # Policy network
-# POLICY_TYPE = "MlpPolicy"
-# # NET_ARCH = [256, 256]          # Uncomment to customize network size
-# # POLICY_NET_ARCH = [512, 512]
-# # VALUE_NET_ARCH = [512, 512]
-
-# NET_ARCH = [256, 256]
-
-# # Training
-# TOTAL_TIMESTEPS = 1_500_000
-# EVAL_FREQ = 5_000                # Evaluate every N timesteps
-# N_EVAL_EPISODES = 10             # Episodes per evaluation
-# CHECKPOINT_FREQ = 50_000         # Save checkpoint every N timesteps
-
-globals().update(configs)  # Update globals with configs from config.py
-globals().update(configs["Spacecraft_Environment"])  # Update globals with environment configs
-globals().update(configs["PPO_Hyperparameters"])  # Update globals with PPO hyperparameters
-
 
 
 # Reproducibility
-SEED = 42
-
-
-# =============================================================================
-# DERIVED PATHS (don't edit)
-# =============================================================================
-
-TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
-SAVE_PATH = os.path.join(PPO_BASE_SAVE_PATH, PPO_EXPERIMENT_NAME)
-LOG_PATH = os.path.join(PPO_BASE_LOG_PATH, PPO_EXPERIMENT_NAME)
-CHECKPOINT_PATH = os.path.join(SAVE_PATH, "checkpoints")
-TENSORBOARD_PATH = os.path.join(LOG_PATH, "tensorboard")
-
-
-
-# Resume training
-RESUME_TRAINING = False
-RESUME_TIMESTEPS = 1_000_000
-RESUME_MODEL_PATH = os.path.join(CHECKPOINT_PATH, f"model_{RESUME_TIMESTEPS}_steps.zip")  # Path to checkpoint to resume from
-
-
-
+SEED = ExpConfig().seed
 
 
 # =============================================================================
@@ -169,84 +51,11 @@ def set_seed(seed: int):
     os.environ["PYTHONHASHSEED"] = str(seed)
 
 
-def get_config() -> dict:
-    """Return all config as a dictionary for saving."""
-    return {
-        "experiment": {
-            "name": PPO_EXPERIMENT_NAME,
-            "notes": PPO_EXPERIMENT_NOTES,
-            "timestamp": TIMESTAMP,
-        },
-        "environment": {
-            "dt": DT,
-            "num_steps": MAX_EP_STEPS,
-            "state_limits": STATE_LIMITS,
-            "control_limits": CONTROL_LIMITS,
-            "theta_tol": THETA_THRESHOLD,
-            "omega_tol": OMEGA_THRESHOLD,
-            "omega_penalty": OMEGA_PENALTY,
-            "goal_reward": GOAL_REWARD,
-        },
-        "ppo": {
-            "learning_rate": LEARNING_RATE,
-            "n_steps": N_STEPS,
-            "batch_size": BATCH_SIZE,
-            "n_epochs": N_EPOCHS,
-            "gamma": GAMMA,
-            "gae_lambda": GAE_LAMBDA,
-            "clip_range": CLIP_RANGE,
-            "ent_coef": ENT_COEF,
-            "vf_coef": VF_COEF,
-            "max_grad_norm": MAX_GRAD_NORM,
-        },
-        "training": {
-            "total_timesteps": TOTAL_TIMESTEPS,
-            "checkpoint_freq": CHECKPOINT_FREQ,
-            "seed": SEED,
-        },
-        "resume": {
-            "resumed": RESUME_TRAINING,
-            "resumed_from": RESUME_MODEL_PATH,
-        },
-    }
-
-
-def save_config(config: dict, path: str):
-    """Save config to JSON file."""
-    config_file = os.path.join(path, "config.json")
-    with open(config_file, "w") as f:
-        json.dump(config, f, indent=2)
-    print(f"[INFO] Config saved to: {config_file}")
 
 
 
-def make_env(dynamics_params: Dict, seed: int = None):
-    """Create and wrap environment."""
-    env = SpacecraftEnv(
-        dynamics_params=dynamics_params,
-        dt=DT,
-        max_ep_steps=MAX_EP_STEPS,
-        dyn_noise_std=DYN_NOISE_STD,
-        state_limits=np.array(STATE_LIMITS),
-        control_limits=CONTROL_LIMITS,
-        theta_threshold=THETA_THRESHOLD,
-        omega_threshold=OMEGA_THRESHOLD,
-        omega_penalty=OMEGA_PENALTY,
-        action_penalty=ACTION_PENALTY,
-        goal_reward=GOAL_REWARD,
-    )
-    
-    # Wrap with Monitor for episode logging
-    env = Monitor(env)
-    
-    if seed is not None:
-        env.reset(seed=seed)
-    
-    return env
 
-
-
-def lr_scheduler(start_lr: float, schedule_type: str, end_lr: float = 0.0, total_timesteps: int = TOTAL_TIMESTEPS, initial_timesteps: int = 0):
+def lr_scheduler(start_lr: float, schedule_type: str, end_lr: float = 1e-5, total_timesteps: int = 1_500_000, initial_timesteps: int = 0):
     """
     Get learning rate schedule function for SB3/sbx.
     
@@ -284,10 +93,63 @@ def lr_scheduler(start_lr: float, schedule_type: str, end_lr: float = 0.0, total
 # =============================================================================
 
 def main():
+
+
+    # Load hyperparameters from configs file
+    exp_config = ExpConfig()
+    hyperparams = PPOHyperparameters()
+    env_config = SpacecraftEnvConfig()
+
+    PPO_BASE_SAVE_PATH = exp_config.ppo_base_save_path
+    PPO_BASE_LOG_PATH = exp_config.ppo_base_log_path
+
+
+    PPO_EXPERIMENT_NAME = exp_config.ppo_experiment_name
+    PPO_EXPERIMENT_NOTES = exp_config.ppo_experiment_notes
+
+
+    DYNAMICS_PARAMETERS = env_config.spacecraft_dynamics_parameters
+    DT = env_config.dt
+    MAX_EP_STEPS = env_config.max_ep_steps
+    STATE_LIMITS = np.asarray(env_config.state_limits)
+    CONTROL_LIMITS = np.asarray(env_config.control_limits)
+    DYN_NOISE_STD = env_config.dyn_noise_std
+    THETA_THRESHOLD = env_config.theta_threshold
+    OMEGA_THRESHOLD = env_config.omega_threshold
+    OMEGA_PENALTY = env_config.omega_penalty
+    ACTION_PENALTY = env_config.action_penalty
+    GOAL_REWARD = env_config.goal_reward
+    THETA_STABILITY_TOL = env_config.theta_stability_tol
+    OMEGA_STABILITY_TOL = env_config.omega_stability_tol
+
+
+    POLICY_TYPE = hyperparams.policy_type
+    NET_ARCH = hyperparams.net_arch
+    LEARNING_RATE = hyperparams.learning_rate
+    LEARNING_RATE_SCHEDULE = hyperparams.learning_rate_schedule
+    LEARNING_RATE_FINAL = hyperparams.learning_rate_final
+    N_ROLLOUTS = hyperparams.n_rollouts
+    N_STEPS = hyperparams.n_steps
+    N_EPOCHS = hyperparams.n_epochs
+    BATCH_SIZE = hyperparams.batch_size
+    GAMMA = hyperparams.gamma
+    GAE_LAMBDA = hyperparams.gae_lambda
+    CLIP_RANGE = hyperparams.clip_range
+    ENT_COEF = hyperparams.ent_coef
+    VF_COEF = hyperparams.vf_coef
+    MAX_GRAD_NORM = hyperparams.max_grad_norm
+    TOTAL_TIMESTEPS = hyperparams.total_timesteps
+    CHECKPOINT_FREQ = hyperparams.checkpoint_freq
+
+
+
+
+
     # Create directories
     os.makedirs(SAVE_PATH, exist_ok=True)
     os.makedirs(LOG_PATH, exist_ok=True)
     os.makedirs(CHECKPOINT_PATH, exist_ok=True)
+
     
     # Print experiment info
     print("=" * 60)
@@ -299,10 +161,61 @@ def main():
     if PPO_EXPERIMENT_NOTES:
         print(f"Notes:        {PPO_EXPERIMENT_NOTES}")
     print("=" * 60)
-    
-    # Save config
-    config = get_config()
-    # save_config(config, SAVE_PATH)
+
+
+
+
+    # Make env function for DummyVecEnv
+
+    def make_env(dynamics_params: Dict, seed: int = None):
+        """Create and wrap environment."""
+        env = SpacecraftEnv(
+            dynamics_params=dynamics_params,
+            dt=DT,
+            max_ep_steps=MAX_EP_STEPS,
+            dyn_noise_std=DYN_NOISE_STD,
+            state_limits=np.array(STATE_LIMITS),
+            control_limits=CONTROL_LIMITS,
+            theta_threshold=THETA_THRESHOLD,
+            omega_threshold=OMEGA_THRESHOLD,
+            omega_penalty=OMEGA_PENALTY,
+            action_penalty=ACTION_PENALTY,
+            goal_reward=GOAL_REWARD,
+        )
+        
+        # Wrap with Monitor for episode logging
+        env = Monitor(env)
+        
+        if seed is not None:
+            env.reset(seed=seed)
+        
+        return env
+
+
+
+
+    # =============================================================================
+    # DERIVED PATHS (don't edit)
+    # =============================================================================
+
+    TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+    SAVE_PATH = os.path.join(PPO_BASE_SAVE_PATH, PPO_EXPERIMENT_NAME)
+    LOG_PATH = os.path.join(PPO_BASE_LOG_PATH, PPO_EXPERIMENT_NAME)
+    CHECKPOINT_PATH = os.path.join(SAVE_PATH, "checkpoints")
+    TENSORBOARD_PATH = os.path.join(LOG_PATH, "tensorboard")
+
+
+
+    # Resume training
+    RESUME_TRAINING = False
+    RESUME_TIMESTEPS = 1_000_000
+    RESUME_MODEL_PATH = os.path.join(CHECKPOINT_PATH, f"model_{RESUME_TIMESTEPS}_steps.zip")  # Path to checkpoint to resume from
+
+
+
+
+
+
     
     # Set seeds
     set_seed(SEED)
@@ -397,16 +310,6 @@ def main():
     print(f"\n[INFO] Policy architecture:")
     print(f"  {model.policy}")
     
-    # Setup callbacks
-    # eval_callback = EvalCallback(
-    #     eval_env,
-    #     best_model_save_path=os.path.join(SAVE_PATH, "best_model"),
-    #     log_path=os.path.join(LOG_PATH, "eval"),
-    #     eval_freq=EVAL_FREQ,
-    #     n_eval_episodes=N_EVAL_EPISODES,
-    #     deterministic=True,
-    #     verbose=1,
-    # )
     
     checkpoint_callback = CheckpointCallbackWithVecNormalize(
         save_freq=CHECKPOINT_FREQ,
@@ -443,10 +346,6 @@ def main():
     except KeyboardInterrupt:
         print("\n[INFO] Training interrupted by user")
 
-
-    # After training, sync once for final eval
-    # eval_env.obs_rms = train_env.obs_rms
-    # eval_env.ret_rms = train_env.ret_rms
         
     # Save final model
     final_model_path = os.path.join(SAVE_PATH, "final_model")
@@ -460,7 +359,6 @@ def main():
     
     # Cleanup
     train_env.close()
-    # eval_env.close()
     
     # Print summary
     print("\n" + "=" * 60)

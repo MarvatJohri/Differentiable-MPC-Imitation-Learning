@@ -57,38 +57,41 @@ from simulation_env_simpler import SpacecraftEnv
 from simulation_env_jax import SpacecraftEnvJax, generate_n_trajectories
 from mj_utils import make_dummy_controller, compute_metrics, print_metrics, get_expert_policy
 
+from configs import ExpConfig, SpacecraftEnvConfig, PPOHyperparameters
 
-# Experiment identification
-PPO_EXPERIMENT_NAME = "spacecraft_ppo_omega_hard_limit_test"
-PPO_EXPERIMENT_NOTES = "Initial PPO training on Earth orbit"
 
-DYNAMICS_PARAMETERS = {
-    "mass": 0.75,
-    "inertia": np.array([0.00125, 0.0001, 0.0001, 0.0001, 0.00125, 0.0001, 0.0001, 0.0001, 0.00125]).reshape((3, 3)),
-}
-DYNAMICS_PARAMETERS["inertia_inv"] = np.linalg.inv(DYNAMICS_PARAMETERS["inertia"]) 
+# Load hyperparameters from configs file
+exp_config = ExpConfig()
+hyperparams = PPOHyperparameters()
+env_config = SpacecraftEnvConfig()
 
-# Environment
-DT = 0.1                         # Simulation timestep
-DYN_NOISE_STD = 1e-6             # Dynamics noise
-MAX_EPISODE_STEPS = 1500          # Max steps per episode
+PPO_BASE_SAVE_PATH = exp_config.ppo_base_save_path
+PPO_BASE_LOG_PATH = exp_config.ppo_base_log_path
 
-# State/action limits
-STATE_LIMITS = [[-1, 1]] * 4 + [[-2, 2]] * 3  # [quat, omega]
-CONTROL_LIMIT_SCALE = 1        # Scales [-1, 1] control limits
-CONTROL_LIMITS = CONTROL_LIMIT_SCALE * np.array([[-1, 1]] * 3)  # Torque limits
-MAX_TORQUE = 5e-5                # Maximum torque (N*m)
 
-# Reward shaping
-THETA_THRESHOLD = np.deg2rad(15.0)  # Convert to radians
-OMEGA_THRESHOLD = np.deg2rad(5.0)                 # Angular velocity tolerance (rad/s)
-OMEGA_PENALTY = 0.1               # Penalty weight for omega error
-ACTION_PENALTY = 0.01              # Penalty weight for action magnitude
-GOAL_REWARD = 50.0              # Bonus for reaching goal
+PPO_EXPERIMENT_NAME = exp_config.ppo_experiment_name
+PPO_EXPERIMENT_NOTES = exp_config.ppo_experiment_notes
 
+
+DYNAMICS_PARAMETERS = env_config.spacecraft_dynamics_parameters
+DT = env_config.dt
+MAX_TORQUE = env_config.max_torque
+MAX_EP_STEPS = env_config.max_ep_steps
+STATE_LIMITS = np.asarray(env_config.state_limits)
+CONTROL_LIMITS = np.asarray(env_config.control_limits)
+DYN_NOISE_STD = env_config.dyn_noise_std
+THETA_THRESHOLD = env_config.theta_threshold
+OMEGA_THRESHOLD = env_config.omega_threshold
+OMEGA_PENALTY = env_config.omega_penalty
+ACTION_PENALTY = env_config.action_penalty
+GOAL_REWARD = env_config.goal_reward
+THETA_STABILITY_TOL = env_config.theta_stability_tol
+OMEGA_STABILITY_TOL = env_config.omega_stability_tol
 
 # Evaluation stuff
-NUM_EPSODES = 100
+NUM_EVAL_EPS = exp_config.num_eval_eps
+
+
 
 
 
@@ -106,6 +109,17 @@ TENSORBOARD_PATH = os.path.join(LOG_PATH, "tensorboard")
 MODEL_PATH = os.path.join(SAVE_PATH, "final_model.zip")
 
 
+# Print experiment info
+print("=" * 60)
+print(f"EXPERIMENT: {PPO_EXPERIMENT_NAME}")
+print("=" * 60)
+print(f"Save path:    {SAVE_PATH}")
+print(f"Log path:     {LOG_PATH}")
+if PPO_EXPERIMENT_NOTES:
+    print(f"Notes:        {PPO_EXPERIMENT_NOTES}")
+print("=" * 60)
+
+
 
 
 
@@ -117,10 +131,10 @@ def make_env(dynamics_params: Dict, seed: int = None):
     env = SpacecraftEnv(
         dynamics_params=dynamics_params,
         dt=DT,
-        max_ep_steps=MAX_EPISODE_STEPS,
+        max_ep_steps=MAX_EP_STEPS,
         dyn_noise_std=DYN_NOISE_STD,
         state_limits=np.array(STATE_LIMITS),
-        control_limits=CONTROL_LIMIT_SCALE * np.array([[-1, 1]] * 3),
+        control_limits=CONTROL_LIMITS,
         theta_threshold=THETA_THRESHOLD,
         omega_threshold=OMEGA_THRESHOLD,
         omega_penalty=OMEGA_PENALTY,
@@ -519,8 +533,8 @@ def main():
     # Run evaluation
     evaluate(vec_env=eval_env,
              rl_model=model, 
-             max_steps=MAX_EPISODE_STEPS, 
-             num_episodes=NUM_EPSODES, 
+             max_steps=MAX_EP_STEPS, 
+             num_episodes=NUM_EVAL_EPS, 
              key=jax.random.PRNGKey(0))
 
     # # Run evaluations and collect trajectories
