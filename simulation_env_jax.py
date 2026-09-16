@@ -394,13 +394,6 @@ def generate_trajectory(env: SpacecraftEnvJax,
 
     return trajectory, final_key
 
-    # return {
-    #     "obs": observations,
-    #     "goal_state": init_env_state.goal_state,
-    #     "expert_actions": expert_actions,
-    #     "nominal_traj": nominal_trajs,
-    #     "nominal_cntrl": nominal_cntrls
-    # }, final_key
 
 @eqx.filter_jit
 def generate_n_trajectories(env: SpacecraftEnvJax,
@@ -426,18 +419,110 @@ def generate_n_trajectories(env: SpacecraftEnvJax,
     return trajectories, key
 
 
+def rollout_controller(env: SpacecraftEnvJax,
+                       controller: DiffMPCController,
+                       key: jax.random.PRNGKey,
+                       horizon: int,
+                       max_ep_steps: int,
+                       replan_freq: int = 1,
+                       nx: int = 7,
+                       nu: int = 3):
+
+
+    max_torque = env.max_torque
+
+    def scan_step(carry, _):
+
+        env_state, obs, i, nominal_traj, nominal_cntrl, key = carry
+
+
+        def controller_wrapper(operand):
+            return controller(*operand)
+
+        def no_update(operand):
+
+            _, __, nominal_traj, nominal_cntrl = operand
+
+            # Shift nominal trajectory and control by one step
+            nominal_traj = jnp.concatenate((nominal_traj[1:],jnp.expand_dims(nominal_traj[-1],axis=0)),axis=0)
+            nominal_cntrl = jnp.concatenate((nominal_cntrl[1:],jnp.expand_dims(nominal_cntrl[-1],axis=0)),axis=0)
+            action = nominal_cntrl[0]
+
+            return action, nominal_traj, nominal_cntrl
+
+        # Get controller action
+        action, new_nominal_traj, new_nominal_cntrl = jax.lax.cond(
+            i%replan_freq == 0,
+            controller_wrapper,
+            no_update,
+            operand=(obs, env_state.goal_state, nominal_traj, nominal_cntrl))
+
+        # Normalize controller action
+        action = action / max_torque
+
+        # Extract Q, R from controller for debugging
+        Q, R = controller.Q, controller.R
+
+
+        # Run executed action on the environment using the step key inside the env_state
+        new_env_state, new_obs, info = env.step(env_state, action)
+
+        new_carry = (new_env_state, new_obs, i+1, new_nominal_traj, new_nominal_cntrl, key)
+
+        outputs = (obs, action*max_torque, Q, R)
+
+        return new_carry, outputs
+            
+
+
+    # Env
+    key, subkey = jax.random.split(key)
+    seed = jax.random.randint(subkey, shape=(), minval=0, maxval=2**32 - 1)
+    init_env_state, init_obs, info = env.reset(seed)
+
+    # Generate initial nominal trajectories
+    key, subkey = jax.random.split(key)
+    nominal_traj = jnp.tile(init_env_state.state, (horizon + 1, 1))
+    nominal_cntrl = 1e-8 * jax.random.normal(subkey, shape=(horizon, nu), dtype=jnp.float64)
+
+    init_carry = (init_env_state, init_obs, 0, nominal_traj, nominal_cntrl, key)
+
+    # Do the for loop
+    final_carry, outputs = jax.lax.scan(scan_step, init_carry, xs=None, length=max_ep_steps)
+
+    final_env_state, final_obs, final_i, final_nominal_traj, final_nominal_cntrl, final_key = final_carry
+    observations, actions, Q_list, R_list = outputs
+
+    observations = jnp.concatenate([observations, final_obs[None, :]], axis=0)
+
+    nominal_trajs = jnp.concatenate([nominal_trajs, final_nominal_traj[None, :]], axis=0)
+    nominal_cntrls = jnp.concatenate([nominal_cntrls, final_nominal_cntrl[None, :]], axis=0)
+
+    trajectory = (observations, init_env_state.goal_state, actions, Q_list, R_list)
+
+    return trajectory, final_key
+
+
+def n_rollouts_controller(env: SpacecraftEnvJax,
+                      controller: DiffMPCController,
+                      key: jax.random.PRNGKey,
+                      horizon: int,
+                      max_ep_steps: int,
+                      n_rollouts: int,
+                      replan_freq: int = 1):
+
+    key, subkey = jax.random.split(key)
+    batched_keys = jax.random.split(subkey, n_rollouts)
+    trajectories, _ = jax.vmap(rollout_controller, in_axes=(None, None, 0, None, None, None, None))(env, 
+                                                                                                     controller, 
+                                                                                                     batched_keys, 
+                                                                                                     horizon, 
+                                                                                                     max_ep_steps, 
+                                                                                                     replan_freq)
+    return trajectories, key
+
+
     
-if __name__ == "__main__":
-
-    # Stuff to test timing and stuff, things prof asked for
-
-    env = SpacecraftEnvJax()        
-
-
-    start = time.time()
-    trajectory, key = generate_trajectory(env, None, None, jax.random.PRNGKey(0), beta=0.5, max_ep_steps=100)
-
-        
 
 
 

@@ -12,7 +12,7 @@ import jax.numpy as jnp
 
 from configs import ExpConfig, SpacecraftEnvConfig, DaggerHyperparameters, ControllerConfig
 from mj_utils import load_controller, save_controller, make_dummy_expert, compute_metrics,compute_metrics_multi, plot_metrics_bar, print_metrics, plot_metrics_comparison
-from simulation_env_jax import SpacecraftEnvJax
+from simulation_env_jax import SpacecraftEnvJax, generate_n_trajectories
 from diffmpc_controller import DiffMPCController, FeedForwardNetwork
 
 
@@ -152,3 +152,25 @@ def main():
 
     # Make dummy expert
     expert = make_dummy_expert(env, controller, key)
+
+    # Run 100 test episodes and compute metrics
+    trajectories =  generate_n_trajectories(env, 
+                                            controller, 
+                                            expert, 
+                                            key, 
+                                            beta=0, 
+                                            max_ep_steps=MAX_EP_STEPS, 
+                                            n_trajectories=100,
+                                            replan_frequency=REPLAN_FREQUENCY)
+
+    # Compute metrics
+    metrics = compute_metrics(trajectories,
+                              dt=DT, 
+                              angle_threshold=THETA_THRESHOLD,
+                              omega_threshold=OMEGA_THRESHOLD,
+                              angle_tol_stability=THETA_STABILITY_TOL,
+                              omega_tol_stability=OMEGA_STABILITY_TOL,
+                              tail_length=100)
+
+    # Print metrics
+    print_metrics(metrics)

@@ -38,10 +38,10 @@ class ExpConfig:
     ppo_base_log_path: str = PPO_BASE_LOG_PATH
     dagger_base_save_path: str = DAGGER_BASE_SAVE_PATH
 
-    ppo_experiment_name: str = "spacecraft_ppo_random_test"
+    ppo_experiment_name: str = "spacecraft_ppo_omega_hard_limit_test"
     ppo_experiment_notes: str = "Initial PPO training on Earth orbit"
 
-    dagger_experiment_name: str = "spacecraft_ppo_imitation_dagger_v1_torque_only_experiment1"
+    dagger_experiment_name: str = "spacecraft_ppo_dagger_exp1"
     dagger_experiment_notes: str = "Initial DAgger training on Earth orbit"
 
     resume_ppo_training: bool = False
