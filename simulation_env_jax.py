@@ -42,6 +42,7 @@ class EnvState(NamedTuple):
     goal_state: jnp.ndarray
     step_count: int
     step_key: jax.random.PRNGKey
+    prev_angle_error: float # Added to track previous angle error for reward computation
     
 
 
@@ -63,6 +64,7 @@ class SpacecraftEnvJax(eqx.Module):
     theta_threshold: float = eqx.field(static=True)
     omega_threshold: float = eqx.field(static=True)
     omega_penalty: float = eqx.field(static=True)
+    omega_fail_penalty: float = eqx.field(static=True)
     action_penalty: float = eqx.field(static=True)
     goal_reward: float = eqx.field(static=True)
     theta_threshold_reward: float = eqx.field(static=True)
@@ -87,6 +89,7 @@ class SpacecraftEnvJax(eqx.Module):
                  omega_threshold: Optional[float] = 0.1,
                  theta_threshold_reward: Optional[float] = 10.0,
                  omega_penalty: Optional[float] = 0.1,
+                 omega_fail_penalty: Optional[float] = 50.0,
                  action_penalty: Optional[float] = 0.1,
                  goal_reward: Optional[float] = 10.0,
                  ):
@@ -105,6 +108,7 @@ class SpacecraftEnvJax(eqx.Module):
         self.theta_threshold = theta_threshold
         self.omega_threshold = omega_threshold
         self.omega_penalty = omega_penalty
+        self.omega_fail_penalty = omega_fail_penalty
         self.action_penalty = action_penalty
         self.goal_reward = goal_reward
         self.theta_threshold_reward = theta_threshold_reward
@@ -152,25 +156,34 @@ class SpacecraftEnvJax(eqx.Module):
         return jnp.concatenate([q_err, w_err], axis=0)
 
 
-    def reset(self, seed, options=None):
+
+    def reset(self, key: jax.random.PRNGKey, options=None):
 
         # Unlike normal gym envs, seed is REQUIRED
         # (Cause I use seeds in original collect trajectory)
 
-        key = jax.random.PRNGKey(seed)
+        # key = jax.random.PRNGKey(seed)
         key, subkey = jax.random.split(key)
 
         initial_state, target_state = self._sample_episode_context(subkey)
         step_key = key
         step_count = 0
 
+        init_obs = self._get_obs(initial_state, target_state)
+
+        # Get initial angle error for reward computation
+        q_err = init_obs[:4]
+        angle_error = 2 * jnp.arccos(jnp.clip(jnp.abs(q_err[0]), 0, 1))
+
+
         # Make initial env state
         init_env_state = EnvState(state=initial_state,
                                   goal_state=target_state,
                                   step_count=step_count,
-                                  step_key=step_key)
+                                  step_key=step_key,
+                                  prev_angle_error=angle_error)  
 
-        init_obs = self._get_obs(initial_state, target_state)
+        
 
         info = (initial_state, target_state) # The only info thats really needed
 
@@ -246,7 +259,104 @@ class SpacecraftEnvJax(eqx.Module):
         # Clipping ang vel SHOULDN'T be necessary
         
         return new_state
+
+
+    # def _is_terminated(self):
     
+    #     # Check if goal state is reached TECHNICALLY should also stop if it reaches failure states 
+    #     # Like collisions
+
+    #     # For now keep it in, else remove cause it makes code too clunky
+
+    #     # terminated = self.reached
+
+        
+
+    #     # terminated = self.reached or self.failure
+    #     terminated = self.failure
+
+    #     # if self.reached:
+    #     #     print(f"Terminating episode: goal reached at step {self.step_count}.")
+    #     #     terminated = True
+
+    #     return terminated
+
+    # def _is_truncated(self):
+
+    #     # Check if max steps reached or smthng idk what is put here actually
+
+    #     truncated = self.step_count >= self.max_ep_steps
+
+    #     return truncated
+
+
+    def _get_reward(self, q_err, omega_err, action, new_state, prev_angle_error):
+        # Angle error from quaternion (0 to pi)
+        angle_error = 2 * jnp.arccos(jnp.clip(jnp.abs(q_err[0]), 0, 1))
+        omega_error_norm = jnp.linalg.norm(omega_err)
+        action_norm = jnp.linalg.norm(action)
+
+        # Normalize for consistent scaling
+        omega_error_normalized = omega_error_norm / self.max_omega_norm
+        action_normalized = action_norm / self.max_action_norm
+
+        reward = 0.0
+
+
+        # Reward proposed in NASA paper
+        ra = jnp.exp(-angle_error/(0.28*jnp.pi))
+
+
+        not_reached_goal = angle_error > self.theta_threshold
+        no_progress = angle_error > prev_angle_error
+
+        reward = jnp.where(not_reached_goal & no_progress, ra - 1, ra)
+
+
+
+
+        prev_angle_error = angle_error
+
+        # Compute reward (negative costs)
+        # reward -= self.quaternion_penalty * angle_error_normalized
+        reward -= self.omega_penalty * omega_error_normalized
+        reward -= self.action_penalty * action_normalized
+        
+     
+        
+        # Reward reaching threshold
+        reward = reward + jnp.where(~not_reached_goal, self.theta_threshold_reward, 0.0)
+
+        # Reward reaching goal
+        reward = reward + jnp.where(~not_reached_goal & (omega_error_norm < self.omega_threshold), self.goal_reward, 0.0)
+
+        
+        # Check if omega is beyond state limits, if so return a big negative reward
+        
+        # Add fail check
+        failed = jnp.any(jnp.abs(new_state[4:]) > self.state_limits[4:, 1])
+
+        reward = jnp.where(failed, -self.omega_fail_penalty, reward)
+
+        return reward, prev_angle_error
+
+    def _failed(self, state: jnp.ndarray) -> bool:
+    
+        # Check if it spins too much
+        # Patrick hasn't mentioned this as a fail state
+        # GPT suggests including it, might not actually be necessary
+
+
+        # if np.linalg.norm(self.state[4:]) > 1.5:  # Arbitrary threshold for angular velocity
+        #     self.failure = True
+        #     return True
+
+
+
+        return jnp.any(jnp.abs(state[4:]) > self.state_limits[4:, 1])
+
+       
+
 
     def step(self, 
              env_state: EnvState, 
@@ -263,7 +373,7 @@ class SpacecraftEnvJax(eqx.Module):
         action = jnp.clip(action, self.control_limits[:, 0], self.control_limits[:, 1])
 
         # Convert action to torque
-        action = action * self.max_torque
+        torque = action * self.max_torque
 
         # Unpack env state
         state = env_state.state
@@ -273,26 +383,53 @@ class SpacecraftEnvJax(eqx.Module):
 
         step_key, noise_key = jax.random.split(step_key)
 
-        new_state = self.rk4_step(state, action, noise_key)
-        # Handle wrap around for quaternion 
-        # if new_state[0] < 0:
-        #     new_state = new_state.at[:4].set(-new_state[:4])
+        new_state = self.rk4_step(state, torque, noise_key)
 
+        # Handle wrap around for quaternion 
         new_state = jax.lax.cond(new_state[0] < 0, lambda x: x.at[:4].set(-x[:4]), lambda x: x, new_state)
 
         obs = self._get_obs(new_state, goal_state)
 
+        failed = self._failed(new_state)
+
+        reward, prev_angle_error = self._get_reward(obs[:4], obs[4:7], action, new_state, env_state.prev_angle_error)
+
         step_count += 1
+
+        terminated = failed
+        truncated = step_count >= self.max_ep_steps
+
+        done = terminated | truncated
+
 
         # Update env state
         new_env_state = EnvState(state=new_state,
                                  goal_state=goal_state,
+                                 prev_angle_error=prev_angle_error,
                                  step_count=step_count,
                                  step_key=step_key)
 
+
         info = (new_state, goal_state, step_count, step_key)
 
-        return new_env_state, obs, info
+        return new_env_state, obs, reward, done, info
+
+    def step_autoreset(self, env_state: EnvState, action: jnp.ndarray):
+
+        """Step + reset and continue env, to be used inside PPO"""
+        new_env_state, obs, reward, done, info = self.step(env_state, action)
+
+        # Fresh keys: one for the reset, one carried forward as the new step_key
+        reset_key, step_key = jax.random.split(new_env_state.step_key)
+        new_env_state = new_env_state._replace(step_key=step_key)
+
+        reset_state, reset_obs, _ = self.reset(reset_key)
+
+        # Where done, swap in the fresh episode (works on every EnvState field)
+        new_env_state = jax.tree.map(lambda r, s: jnp.where(done, r, s), reset_state, new_env_state)
+        obs = jnp.where(done, reset_obs, obs)
+
+        return new_env_state, obs, reward, done, info
 
 
         
@@ -353,7 +490,7 @@ def generate_trajectory(env: SpacecraftEnvJax,
         new_nominal_cntrl = jnp.where(use_expert, shifted_cntrl, controller_nominal_cntrl)
 
         # Run executed action on the environment using the step key inside the env_state
-        new_env_state, new_obs, info = env.step(env_state, executed_action)
+        new_env_state, new_obs, reward, done, info = env.step(env_state, executed_action)
 
         new_carry = (new_env_state, new_obs, i+1, new_nominal_traj, new_nominal_cntrl, key)
 
@@ -367,8 +504,9 @@ def generate_trajectory(env: SpacecraftEnvJax,
 
     # Env
     key, subkey = jax.random.split(key)
-    seed = jax.random.randint(subkey, shape=(), minval=0, maxval=2**32 - 1)
-    init_env_state, init_obs, info = env.reset(seed)
+    # seed = jax.random.randint(subkey, shape=(), minval=0, maxval=2**32 - 1)
+    # init_env_state, init_obs, info = env.reset(seed)
+    init_env_state, init_obs, info = env.reset(subkey)
 
     # Generate initial nominal trajectories
     key, subkey = jax.random.split(key)
@@ -465,7 +603,7 @@ def rollout_controller(env: SpacecraftEnvJax,
 
 
         # Run executed action on the environment using the step key inside the env_state
-        new_env_state, new_obs, info = env.step(env_state, action)
+        new_env_state, new_obs, reward, done, info = env.step(env_state, action)
 
         new_carry = (new_env_state, new_obs, i+1, new_nominal_traj, new_nominal_cntrl, key)
 
@@ -477,8 +615,9 @@ def rollout_controller(env: SpacecraftEnvJax,
 
     # Env
     key, subkey = jax.random.split(key)
-    seed = jax.random.randint(subkey, shape=(), minval=0, maxval=2**32 - 1)
-    init_env_state, init_obs, info = env.reset(seed)
+    # seed = jax.random.randint(subkey, shape=(), minval=0, maxval=2**32 - 1)
+    # init_env_state, init_obs, info = env.reset(seed)
+    init_env_state, init_obs, info = env.reset(subkey)
 
     # Generate initial nominal trajectories
     key, subkey = jax.random.split(key)
