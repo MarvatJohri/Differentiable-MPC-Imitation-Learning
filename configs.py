@@ -54,6 +54,9 @@ class ExpConfig:
     ppo_resume_model_path: str = field(init=False)
     dagger_resume_model_path: str = field(init=False)
 
+    nx: int = 7
+    nu: int = 3
+
     def __post_init__(self):
 
         self.ppo_resume_model_path: str = self.ppo_base_save_path + f"/{self.ppo_experiment_name}" + "/checkpoints" + f"/model_{self.ppo_resume_timesteps}_steps.zip"
@@ -65,17 +68,6 @@ class ExpConfig:
     # Evaluation stuff
     num_eval_eps: int = 100
 
-def _make_dynamics_params():
-    inertia = jnp.array([
-        [0.00125, 0.0001, 0.0001],
-        [0.0001, 0.00125, 0.0001],
-        [0.0001, 0.0001, 0.00125]
-    ])
-    return {
-        "mass": 0.75,
-        "inertia": inertia,
-        "inertia_inv": jnp.linalg.inv(inertia),
-    }
 
 
 @dataclass

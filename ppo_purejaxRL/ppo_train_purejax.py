@@ -1,23 +1,20 @@
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
-import numpy as np
 import optax
-from flax.linen.initializers import constant, orthogonal
 from typing import Sequence, NamedTuple, Any
-from flax.training.train_state import TrainState
-import distrax
-from wrappers import (
-    LogWrapper,
-    BraxGymnaxWrapper,
-    VecEnv,
-    NormalizeVecObservation,
-    NormalizeVecReward,
-    ClipAction,
-)
+# from wrappers import (
+#     LogWrapper,
+#     BraxGymnaxWrapper,
+#     VecEnv,
+#     NormalizeVecObservation,
+#     NormalizeVecReward,
+#     ClipAction,
+# )
 
 
 import equinox as eqx
+from simulation_env_jax import SpacecraftEnvJax
+from configs import ExpConfig, SpacecraftEnvConfig, PPOHyperparameters
 
 
 
@@ -32,8 +29,8 @@ def _ortho_linear(in_f: int, out_f: int, key, scale: float) -> eqx.nn.Linear:
 class MLP(eqx.Module):
     layers: tuple
  
-    def __init__(self, in_size, hidden_sizes, key, out_size, out_scale):
-        sizes = [in_size, *hidden_sizes]
+    def __init__(self, in_size, layers, key, out_size, out_scale):
+        sizes = [in_size, *layers]
         keys = jax.random.split(key, len(sizes))
         hidden = tuple(
             _ortho_linear(sizes[i], sizes[i + 1], keys[i], jnp.sqrt(2.0))
@@ -53,11 +50,11 @@ class ActorCritic(eqx.Module):
     critic: MLP
     log_std: jax.Array          
  
-    def __init__(self, obs_dim, act_dim, hidden_sizes, key, init_log_std=-0.5):
+    def __init__(self, obs_dim, act_dim, layers, key, init_log_std=-0.5):
         actor_key, critic_key = jax.random.split(key)
         # Std PPO initialization: small init for actor, larger for critic
-        self.actor = MLP(obs_dim, hidden_sizes, actor_key, act_dim, 0.01)   # small init -> ~0 mean actions
-        self.critic = MLP(obs_dim, hidden_sizes, critic_key, 1, 1.0)
+        self.actor = MLP(obs_dim, layers, actor_key, act_dim, 0.01)   # small init -> ~0 mean actions
+        self.critic = MLP(obs_dim, layers, critic_key, 1, 1.0)
         self.log_std = jnp.full((act_dim,), init_log_std)
  
     # These operate on a SINGLE obs; use jax.vmap for batches.
@@ -80,45 +77,14 @@ def gaussian_entropy(log_std):
 
     
 
-
-class ActorCriticEqx(eqx.Module):
-
-    layers: list = eqx.field(static=True)
-    obs_dim: int = eqx.field(static=True)
-    action_dim: int = eqx.field(static=True)
-    activation: str = eqx.field(static=True)
-
-
-
-    def __init__(self, obs_dim, action_dim, layers, activation="tanh", key=None):
-        if key is None:
-            key = jax.random.PRNGKey(42)
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-        self.layers = []
-        self.activation = activation
-        keys = jax.random.split(key, len(layers) + 2)
-        for i in range(len(layers)):
-            layer = eqx.nn.Linear(
-                in_features=layers[i - 1] if i > 0 else obs_dim,
-                out_features=layers[i],
-                key=keys[i],
-            )
-            self.layers.append(layer)
-        self.actor_mean_layer = eqx.nn.Linear(
-            in_features=layers[-1], out_features=action_dim, key=keys[-2]
-        )
-        self.actor_logstd_layer = eqx.nn.Linear(
-            in_features=layers[-1], out_features=action_dim, key=keys[-1]
-        )
-        self.critic_layer = eqx.nn.Linear(
-            in_features=layers[-1], out_features=1, key=keys[-1]
-        )
-
-
-
-
-
+def sample_action(model: ActorCritic, obs, key):
+    """Batched: obs is (B, obs_dim). Returns action, log_prob, value."""
+    mean = jax.vmap(model.mean)(obs)
+    value = jax.vmap(model.value)(obs)
+    noise = jax.random.normal(key, mean.shape, dtype=mean.dtype)
+    action = mean + jnp.exp(model.log_std) * noise
+    log_prob = gaussian_log_prob(mean, model.log_std, action)
+    return action, log_prob, value
 
 
 
@@ -133,52 +99,149 @@ class Transition(NamedTuple):
     info: jnp.ndarray
 
 
-def make_train(config):
+def lr_scheduler(start_lr: float, schedule_type: str, end_lr: float = 1e-5, 
+                 total_timesteps: int = 1_500_000, initial_timesteps: int = 0):
+    # Use Optax's built-in schedulers for learning rate scheduling
+    if schedule_type == "linear":
+        return optax.linear_schedule(
+            init_value=start_lr,
+            end_value=end_lr,
+            transition_steps=total_timesteps - initial_timesteps
+        )
+    elif schedule_type == "exponential":
+        return optax.exponential_decay(
+            init_value=start_lr,
+            transition_steps=total_timesteps - initial_timesteps,
+            decay_rate=end_lr / start_lr,
+            staircase=False
+        )
+    elif schedule_type == "cosine":
+        return optax.cosine_decay_schedule(
+            init_value=start_lr,
+            decay_steps=total_timesteps - initial_timesteps,
+            alpha=end_lr / start_lr
+        )
+    elif schedule_type == "constant":
+        return optax.constant_schedule(start_lr)
+    else:
+        raise ValueError(f"Unsupported learning rate schedule type: {schedule_type}")
+
+
+
+
+
+
+def make_train(config, env: SpacecraftEnvJax):
     config["NUM_UPDATES"] = (
         config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     )
     config["MINIBATCH_SIZE"] = (
         config["NUM_ENVS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     )
-    env, env_params = BraxGymnaxWrapper(config["ENV_NAME"]), None
-    env = LogWrapper(env)
-    env = ClipAction(env)
-    env = VecEnv(env)
+    # env, env_params = BraxGymnaxWrapper(config["ENV_NAME"]), None
+    # env = LogWrapper(env)
+    # env = ClipAction(env)
+    # env = VecEnv(env)
     if config["NORMALIZE_ENV"]:
-        env = NormalizeVecObservation(env)
-        env = NormalizeVecReward(env, config["GAMMA"])
+        # env = NormalizeVecObservation(env)
+        # env = NormalizeVecReward(env, config["GAMMA"])
 
-    def linear_schedule(count):
-        frac = (
-            1.0
-            - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"]))
-            / config["NUM_UPDATES"]
+        # TODO: Add normalization for jax envs
+
+        pass
+
+    # Get learning rate scheduler
+    lr = lr_scheduler(
+        start_lr=config["LEARNING_RATE"],
+        schedule_type=config["LEARNING_RATE_SCHEDULE"],
+        end_lr=config["LEARNING_RATE_FINAL"],
+        total_timesteps=config["TOTAL_TIMESTEPS"],
+        INITIAL_TIMESTEPS=config["RESUME_TIMESTEPS"] if config["RESUME_TRAINING"] else 0
+    )
+
+    obs_dim = config["OBS_DIM"]
+    act_dim = config["ACT_DIM"]
+
+    # Vectorized reset and step functions for the environment
+    v_rest = jax.vmap(env.reset)
+    v_step = jax.vmap(env.step_autoreset)
+
+    def calculate_gae(traj: Transition, last_val):
+        def get_advantages(gae_and_next_value, transition: Transition):
+            gae, next_value = gae_and_next_value
+            done, value, reward = (
+                transition.done,
+                transition.value,
+                transition.reward,
+            )
+            not_done = 1.0 - done.astype(value.dtype)
+            delta = reward + config["GAMMA"] * next_value * not_done - value
+            gae = delta + config["GAMMA"] * config["GAE_LAMBDA"] * not_done * gae
+            return (gae, value), gae
+
+        _, advantages = jax.lax.scan(
+            get_advantages, (jnp.zeros_like(last_val), last_val), traj, reverse=True,
+            # unroll=16
         )
-        return config["LR"] * frac
+        return advantages, advantages + traj.value
 
-    def train(rng):
+    def loss_fn(model, batch: Transition, advantage, targets):
+        mean = jax.vmap(model.mean)(batch.obs)
+        value = jax.vmap(model.value)(batch.obs)
+        log_prob = gaussian_log_prob(mean, model.log_std, batch.action)
+
+        # Value loss
+        # if config["CLIP_VALUE_LOSS"]:
+        #     v_clipped = batch.value + jnp.clip(value - batch.value, -config["CLIP_EPS"], config["CLIP_EPS"])
+        #     value_loss = 0.5 * jnp.maximum((value - targets) ** 2, (v_clipped - targets) ** 2).mean()
+        # else:
+        #     value_loss = 0.5 * ((value - targets) ** 2).mean()
+
+        value_pred_clipped = batch.value + jnp.clip(value - batch.value, -config["CLIP_EPS"], config["CLIP_EPS"])
+        # value_loss = 0.5 * jnp.maximum((value - targets) ** 2, (value_pred_clipped - targets) ** 2).mean()
+
+        value_losses = jnp.square(value - targets)
+        value_losses_clipped = jnp.square(value_pred_clipped - targets)
+        value_loss = (
+            0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
+        )
+
+        # Clipped surrogate objective
+        log_ratio = log_prob - batch.log_prob
+        ratio = jnp.exp(log_ratio)
+        advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
+        pg_loss = -jnp.minimum(ratio * advantage, jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * advantage).mean()
+
+        entropy = gaussian_entropy(model.log_std)
+        total = pg_loss + config["VF_COEF"] * value_loss - config["ENT_COEF"] * entropy
+        approx_kl = ((ratio - 1.0) - log_ratio).mean()
+        return total, (value_loss, pg_loss, entropy, approx_kl)
+
+    # grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=True)
+
+    
+
+    def train(key):
         # INIT NETWORK
-        network = ActorCritic(
-            env.action_space(env_params).shape[0], activation=config["ACTIVATION"]
+        # network = ActorCritic(
+        #     env.action_space(env_params).shape[0], activation=conf    ig["ACTIVATION"]
+        # )
+
+        # Initialize actor critic network
+        key, subkey = jax.random.split(key)
+        model = ActorCritic(
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            layers=config["NET_ARCH"],
+            key=subkey,
         )
-        rng, _rng = jax.random.split(rng)
-        init_x = jnp.zeros(env.observation_space(env_params).shape)
-        network_params = network.init(_rng, init_x)
-        if config["ANNEAL_LR"]:
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            )
-        else:
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(config["LR"], eps=1e-5),
-            )
-        train_state = TrainState.create(
-            apply_fn=network.apply,
-            params=network_params,
-            tx=tx,
+
+
+        tx = optax.chain(
+            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+            optax.adam(learning_rate=lr, eps=1e-5),
         )
+        opt_state = tx.init(eqx.filter(model, eqx.is_inexact_array))
 
         # INIT ENV
         rng, _rng = jax.random.split(rng)
@@ -356,25 +419,85 @@ def make_train(config):
 
 
 if __name__ == "__main__":
+
+    exp_config = ExpConfig()
+    hyperparams = PPOHyperparameters()
+    env_config = SpacecraftEnvConfig()
+
+    PPO_BASE_SAVE_PATH = exp_config.ppo_base_save_path
+    PPO_BASE_LOG_PATH = exp_config.ppo_base_log_path
+
+
+    PPO_EXPERIMENT_NAME = exp_config.ppo_experiment_name
+    PPO_EXPERIMENT_NOTES = exp_config.ppo_experiment_notes
+
+    NX = exp_config.nx
+    NU = exp_config.nu
+
+    RESUME_TRAINING = exp_config.resume_ppo_training
+    RESUME_TIMESTEPS = exp_config.ppo_resume_timesteps
+    RESUME_MODEL_PATH = exp_config.ppo_resume_model_path
+
+
+    DYNAMICS_PARAMETERS = env_config.spacecraft_dynamics_parameters
+    DT = env_config.dt
+    MAX_EP_STEPS = env_config.max_ep_steps
+    STATE_LIMITS = jnp.asarray(env_config.state_limits)
+    CONTROL_LIMITS = jnp.asarray(env_config.control_limits)
+    MAX_TORQUE = env_config.max_torque
+    DYN_NOISE_STD = env_config.dyn_noise_std
+    THETA_THRESHOLD = env_config.theta_threshold
+    OMEGA_THRESHOLD = env_config.omega_threshold
+    OMEGA_PENALTY = env_config.omega_penalty
+    OMEGA_FAIL_PENALTY = env_config.omega_fail_penalty
+    ACTION_PENALTY = env_config.action_penalty
+    THETA_THRESHOLD_REWARD = env_config.theta_threshold_reward
+    GOAL_REWARD = env_config.goal_reward
+    THETA_STABILITY_TOL = env_config.theta_stability_tol
+    OMEGA_STABILITY_TOL = env_config.omega_stability_tol
+
+    # Make env
+    env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMETERS,
+                            dt=DT,
+                            max_ep_steps=MAX_EP_STEPS,
+                            state_limits=STATE_LIMITS,
+                            control_limits=CONTROL_LIMITS,
+                            max_torque=MAX_TORQUE,
+                            dyn_noise_std=DYN_NOISE_STD,
+                            theta_threshold=THETA_THRESHOLD,
+                            omega_threshold=OMEGA_THRESHOLD,
+                            theta_threshold_reward=THETA_THRESHOLD_REWARD,
+                            omega_penalty=OMEGA_PENALTY,
+                            omega_fail_penalty=OMEGA_FAIL_PENALTY,
+                            action_penalty=ACTION_PENALTY,
+                            goal_reward=GOAL_REWARD)
+
+
     config = {
-        "LR": 3e-4,
-        "NUM_ENVS": 2048,
-        "NUM_STEPS": 10,
-        "TOTAL_TIMESTEPS": 5e7,
-        "UPDATE_EPOCHS": 4,
-        "NUM_MINIBATCHES": 32,
-        "GAMMA": 0.99,
-        "GAE_LAMBDA": 0.95,
-        "CLIP_EPS": 0.2,
-        "ENT_COEF": 0.0,
-        "VF_COEF": 0.5,
-        "MAX_GRAD_NORM": 0.5,
+        "LEARNING_RATE": hyperparams.learning_rate,
+        "NET_ARCH": hyperparams.net_arch,
+        "LEARNING_RATE_SCHEDULE": hyperparams.learning_rate_schedule,
+        "LEARNING_RATE_FINAL": hyperparams.learning_rate_final,
+        "NUM_ENVS": hyperparams.n_rollouts,
+        "NUM_STEPS": hyperparams.n_steps,
+        "TOTAL_TIMESTEPS": hyperparams.total_timesteps,
+        "RESUME_TRAINING": exp_config.resume_ppo_training,
+        "RESUME_TIMESTEPS": exp_config.ppo_resume_timesteps,
+        "RESUME_MODEL_PATH": exp_config.ppo_resume_model_path,
+        "UPDATE_EPOCHS": hyperparams.n_epochs,
+        "NUM_MINIBATCHES": hyperparams.batch_size,
+        "GAMMA": hyperparams.gamma,
+        "GAE_LAMBDA": hyperparams.gae_lambda,
+        "CLIP_EPS": hyperparams.clip_range,
+        "ENT_COEF": hyperparams.ent_coef,
+        "VF_COEF": hyperparams.vf_coef,
+        "MAX_GRAD_NORM": hyperparams.max_grad_norm,
         "ACTIVATION": "tanh",
-        "ENV_NAME": "hopper",
-        "ANNEAL_LR": False,
         "NORMALIZE_ENV": True,
         "DEBUG": True,
+        "ACT_DIM": NU,
+        "OBS_DIM": NX,
     }
     rng = jax.random.PRNGKey(30)
-    train_jit = jax.jit(make_train(config))
+    train_jit = jax.jit(make_train(config, env))
     out = train_jit(rng)
