@@ -77,8 +77,9 @@ def gaussian_entropy(log_std):
 
     
 
-def sample_action(model: ActorCritic, obs, key):
-    """Batched: obs is (B, obs_dim). Returns action, log_prob, value."""
+def sample_actions(model: ActorCritic, obs, key):
+    # Assume batched observations
+    # of size obs.shape = (batch_size, obs_dim)
     mean = jax.vmap(model.mean)(obs)
     value = jax.vmap(model.value)(obs)
     noise = jax.random.normal(key, mean.shape, dtype=mean.dtype)
@@ -127,6 +128,24 @@ def lr_scheduler(start_lr: float, schedule_type: str, end_lr: float = 1e-5,
         raise ValueError(f"Unsupported learning rate schedule type: {schedule_type}")
 
 
+class RunningStat(NamedTuple):
+    mean: jnp.ndarray
+    var: jnp.ndarray
+    count: jnp.ndarray
+ 
+ 
+def init_running_stat() -> RunningStat:
+    return RunningStat(jnp.zeros(()), jnp.ones(()), jnp.asarray(1e-4))  
+ 
+ 
+def update_running_stat(s: RunningStat, x: jnp.ndarray) -> RunningStat:
+    """Parallel (Chan et al.) update of mean/var with a batch x."""
+    b_mean, b_var, b_count = x.mean(), x.var(), x.size
+    delta = b_mean - s.mean
+    tot = s.count + b_count
+    new_mean = s.mean + delta * b_count / tot
+    m2 = s.var * s.count + b_var * b_count + delta ** 2 * s.count * b_count / tot
+    return RunningStat(new_mean, m2 / tot, tot)
 
 
 
@@ -163,8 +182,11 @@ def make_train(config, env: SpacecraftEnvJax):
     act_dim = config["ACT_DIM"]
 
     # Vectorized reset and step functions for the environment
-    v_rest = jax.vmap(env.reset)
+    v_reset = jax.vmap(env.reset)
     v_step = jax.vmap(env.step_autoreset)
+    v_failed = jax.vmap(env._failed)
+    v_get_obs = jax.vmap(env._get_obs)
+
 
     def calculate_gae(traj: Transition, last_val):
         def get_advantages(gae_and_next_value, transition: Transition):
@@ -181,11 +203,11 @@ def make_train(config, env: SpacecraftEnvJax):
 
         _, advantages = jax.lax.scan(
             get_advantages, (jnp.zeros_like(last_val), last_val), traj, reverse=True,
-            # unroll=16
+            unroll=16
         )
         return advantages, advantages + traj.value
 
-    def loss_fn(model, batch: Transition, advantage, targets):
+    def loss_fn(model: ActorCritic, batch: Transition, gae, targets):
         mean = jax.vmap(model.mean)(batch.obs)
         value = jax.vmap(model.value)(batch.obs)
         log_prob = gaussian_log_prob(mean, model.log_std, batch.action)
@@ -209,13 +231,24 @@ def make_train(config, env: SpacecraftEnvJax):
         # Clipped surrogate objective
         log_ratio = log_prob - batch.log_prob
         ratio = jnp.exp(log_ratio)
-        advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
-        pg_loss = -jnp.minimum(ratio * advantage, jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * advantage).mean()
+        gae = (gae - gae.mean()) / (gae.std() + 1e-8)
+
+        loss_actor1 = ratio * gae
+        loss_actor2 = (
+            jnp.clip(
+                ratio,
+                1.0 - config["CLIP_EPS"],
+                1.0 + config["CLIP_EPS"],
+            )
+            * gae
+        )
+        loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
+        loss_actor = loss_actor.mean()
 
         entropy = gaussian_entropy(model.log_std)
-        total = pg_loss + config["VF_COEF"] * value_loss - config["ENT_COEF"] * entropy
+        total_loss = loss_actor + config["VF_COEF"] * value_loss - config["ENT_COEF"] * entropy
         approx_kl = ((ratio - 1.0) - log_ratio).mean()
-        return total, (value_loss, pg_loss, entropy, approx_kl)
+        return total_loss, (value_loss, loss_actor, entropy, approx_kl)
 
     # grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=True)
 
@@ -244,67 +277,97 @@ def make_train(config, env: SpacecraftEnvJax):
         opt_state = tx.init(eqx.filter(model, eqx.is_inexact_array))
 
         # INIT ENV
-        rng, _rng = jax.random.split(rng)
-        reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
-        obsv, env_state = env.reset(reset_rng, env_params)
+        # rng, _rng = jax.random.split(rng)
+        # reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
+        # obsv, env_state = env.reset(reset_rng, env_params)
+
+        key, subkey = jax.random.split(key)
+        reset_keys = jax.random.split(subkey, config["NUM_ENVS"])
+        v_obsv, v_env_state, _ = v_reset(reset_keys)
+        ep_return = jnp.zeros((config["NUM_ENVS"],),dtype=v_obsv.dtype)
+        discounted_return = jnp.zeros((config["NUM_ENVS"],),dtype=v_obsv.dtype)
+        running_stat = init_running_stat()
 
         # TRAIN LOOP
-        def _update_step(runner_state, unused):
+        def _update_step(carry_top, unused):
+            # Collect stuff to be used in later jax.lax.scan calls
+            # Rename carry top to smthng else later
+            model, opt_state, env_state, obs, ep_return, disc_return, rstat, key = carry_top
+
+
+
             # COLLECT TRAJECTORIES
-            def _env_step(runner_state, unused):
-                train_state, env_state, last_obs, rng = runner_state
+            def _env_step(carry, unused):
+                # train_state, env_state, last_obs, rng = runner_state
+                env_states, obs, ep_return, discounted_return, running_stat, key = carry
+                key, subkey = jax.random.split(key)
 
                 # SELECT ACTION
-                rng, _rng = jax.random.split(rng)
-                pi, value = network.apply(train_state.params, last_obs)
-                action = pi.sample(seed=_rng)
-                log_prob = pi.log_prob(action)
+                # rng, _rng = jax.random.split(rng)
+                # pi, value = network.apply(train_state.params, last_obs)
+                # action = pi.sample(seed=_rng)
+                # log_prob = pi.log_prob(action)
+                action, log_prob, value = sample_actions(model, obs, subkey)
 
                 # STEP ENV
-                rng, _rng = jax.random.split(rng)
-                rng_step = jax.random.split(_rng, config["NUM_ENVS"])
-                obsv, env_state, reward, done, info = env.step(
-                    rng_step, env_state, action, env_params
-                )
+
+                # rng, _rng = jax.random.split(rng)
+                # rng_step = jax.random.split(_rng, config["NUM_ENVS"])
+                # obsv, env_states, reward, done, info = env.step(
+                #     rng_step, env_states, action, env_params
+                # )
+
+                # env manages rng internally so don't need to pass subkey again
+                env_state, next_obs, raw_reward, done, info = v_step(env_state, action)
+                not_done = 1.0 - done.astype(value.dtype)
+
+                ep_return = ep_return + raw_reward
+                finished_return = jnp.where(done, ep_return, 0.0)
+                ep_return = ep_return * not_done
+
+                reward = raw_reward
+                if config["NORMALIZE_REWARD"]:
+                    disc_return = disc_return * config["GAMMA"] * not_done + raw_reward
+                    rstat = update_running_stat(rstat, disc_return)
+                    reward = raw_reward / jnp.sqrt(rstat.var + 1e-8)
+ 
+                # Time-limit truncation: bootstrap with V(terminal obs).
+                # `info` holds the PRE-reset state / goal / step_count from env.step.
+                if config["BOOTSTRAP_TIMEOUTS"]:
+                    term_state, goal_state, term_steps, _ = info
+                    timeout = done & (term_steps >= env.max_ep_steps) & ~v_failed(term_state)
+                    term_obs = v_get_obs(term_state, goal_state)
+                    term_value = jax.vmap(model.value)(term_obs)
+                    reward = reward + config["GAMMA"] * term_value * timeout.astype(reward.dtype)
+
+
+
+
                 transition = Transition(
                     done, action, value, reward, log_prob, last_obs, info
                 )
-                runner_state = (train_state, env_state, obsv, rng)
-                return runner_state, transition
+                # runner_state = (train_state, env_states, obsv, rng)
+                carry = (env_states, next_obs, ep_return, discounted_return, running_stat, key)
+                return carry, (transition, finished_return)
 
-            runner_state, traj_batch = jax.lax.scan(
-                _env_step, runner_state, None, config["NUM_STEPS"]
+            # runner_state, traj_batch = jax.lax.scan(
+            #     _env_step, runner_state, None, config["NUM_STEPS"]
+            # )
+
+            (env_state, obs, ep_return, disc_return, rstat, key), (traj, finished_return) = jax.lax.scan(
+                _env_step, (env_state, obs, ep_return, disc_return, rstat, key), None, length=config["NUM_STEPS"]
             )
 
+
             # CALCULATE ADVANTAGE
-            train_state, env_state, last_obs, rng = runner_state
-            _, last_val = network.apply(train_state.params, last_obs)
+            # train_state, env_state, last_obs, rng = runner_state
+            # _, last_val = network.apply(train_state.params, last_obs)
 
-            def _calculate_gae(traj_batch, last_val):
-                def _get_advantages(gae_and_next_value, transition):
-                    gae, next_value = gae_and_next_value
-                    done, value, reward = (
-                        transition.done,
-                        transition.value,
-                        transition.reward,
-                    )
-                    delta = reward + config["GAMMA"] * next_value * (1 - done) - value
-                    gae = (
-                        delta
-                        + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * gae
-                    )
-                    return (gae, value), gae
+            last_val = jax.vmap(model.value)(obs)
+            advantages, targets = calculate_gae(traj, last_val)
 
-                _, advantages = jax.lax.scan(
-                    _get_advantages,
-                    (jnp.zeros_like(last_val), last_val),
-                    traj_batch,
-                    reverse=True,
-                    unroll=16,
-                )
-                return advantages, advantages + traj_batch.value
 
-            advantages, targets = _calculate_gae(traj_batch, last_val)
+
 
             # UPDATE NETWORK
             def _update_epoch(update_state, unused):
