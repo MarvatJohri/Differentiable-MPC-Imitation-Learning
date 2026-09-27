@@ -14,6 +14,9 @@ ROOT = HERE.parent
 PPO_BASE_SAVE_PATH = str(HERE / "ppo_results")
 PPO_BASE_LOG_PATH = str(HERE / "ppo_logs")
 
+ACMPC_BASE_SAVE_PATH = str(HERE / "acmpc_results")
+ACMPC_BASE_LOG_PATH = str(HERE / "acmpc_logs")
+
 DAGGER_BASE_SAVE_PATH = str(HERE / "dagger_results")
 
 SPACECRAFT_DYNAMICS_PARAMETERS = {
@@ -36,10 +39,17 @@ class ExpConfig:
 
     ppo_base_save_path: str = PPO_BASE_SAVE_PATH
     ppo_base_log_path: str = PPO_BASE_LOG_PATH
+
+    acmpc_base_save_path: str = ACMPC_BASE_SAVE_PATH
+    acmpc_base_log_path: str = ACMPC_BASE_LOG_PATH
+
     dagger_base_save_path: str = DAGGER_BASE_SAVE_PATH
 
-    ppo_experiment_name: str = "spacecraft_ppo_omega_hard_limit_test"
+    ppo_experiment_name: str = "spacecraft_ppo_purejax_exp1"
     ppo_experiment_notes: str = "Initial PPO training on Earth orbit"
+
+    acmpc_experiment_name: str = "spacecraft_acmpc_purejax_epx1"
+    acmpc_experiment_notes: str = "Initial AC-MPC training on Earth orbit"
 
     dagger_experiment_name: str = "spacecraft_ppo_dagger_exp1"
     dagger_experiment_notes: str = "Initial DAgger training on Earth orbit"
@@ -47,26 +57,32 @@ class ExpConfig:
     resume_ppo_training: bool = False
     resume_dagger_training: bool = False
 
+    resume_acmpc_training: bool = False
+    resume_acmpc_timesteps: int = 0
+
     ppo_resume_timesteps: int = 0
     dagger_resume_timesteps: int = 0
 
 
     ppo_resume_model_path: str = field(init=False)
     dagger_resume_model_path: str = field(init=False)
+    acmpc_resume_model_path: str = field(init=False)
 
     nx: int = 7
     nu: int = 3
+
+    seed: int = 42
+    
+    # Evaluation stuff
+    num_eval_eps: int = 100
 
     def __post_init__(self):
 
         self.ppo_resume_model_path: str = self.ppo_base_save_path + f"/{self.ppo_experiment_name}" + "/checkpoints" + f"/model_{self.ppo_resume_timesteps}_steps.zip"
         self.dagger_resume_model_path: str = self.dagger_base_save_path + f"/{self.dagger_experiment_name}" + "/checkpoints" + f"/model_{self.dagger_resume_timesteps}_steps.eqx"
+        self.acmpc_resume_model_path: str = self.acmpc_base_save_path + f"/{self.acmpc_experiment_name}" + "/checkpoints" + f"/model_{self.resume_acmpc_timesteps}_steps.eqx"
 
-
-    seed: int = 42
-
-    # Evaluation stuff
-    num_eval_eps: int = 100
+    
 
 
 
@@ -118,17 +134,56 @@ class PPOHyperparameters:
     learning_rate_schedule: str = 'constant'
     learning_rate_final: float = 1e-5
     n_rollouts: int = 3
-    n_steps: int = 4500
+    n_envs: int = 3
+    n_steps: int = 1500
     n_epochs: int = 10
-    batch_size: int = 500
+    minibatch_size: int = 1500
+    n_minibatches: int = 3
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_range: float = 0.2
     ent_coef: float = 1e-2
     vf_coef: float = 0.5
+    clip_val_loss: bool = False
+    vf_clip_eps: float = 0.2
     max_grad_norm: float = 0.5
     total_timesteps: int = 1_500_000
     checkpoint_freq: int = 100_000
+    log_every: int = 50_000
+    log_every_updates: int = 10
+
+@dataclass
+class ACMPCHyperparameters:
+
+    policy_type: str = 'MlpMPCPolicy'
+    net_arch: list = field(default_factory=lambda: NET_ARCH)
+    learning_rate: float = 1e-3
+    learning_rate_schedule: str = 'constant'
+    learning_rate_final: float = 1e-5
+    n_rollouts: int = 3
+    n_envs: int = 3
+    n_steps: int = 1500
+    n_epochs: int = 10
+    minibatch_size: int = 500
+    n_minibatches: int = 1
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_range: float = 0.2
+    ent_coef: float = 1e-2
+    vf_coef: float = 0.5
+    clip_val_loss: bool = False
+    vf_clip_eps: float = 0.2
+    max_grad_norm: float = 0.5
+    total_timesteps: int = 1_500_000
+    checkpoint_freq: int = 100_000
+    log_every: int = 50_000
+    log_every_updates: int = 10
+    output_activation: str = 'tanh'
+    network_epsilon: float = 1e-3
+    decomposition_type: str = 'diagonal'
+    qr_output_horizon: int = 1
+    mpc_horizon: int = 10
+    replan_frequency: int = 1
 
 
 @dataclass

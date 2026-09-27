@@ -567,6 +567,14 @@ def rollout_controller(env: SpacecraftEnvJax,
                        nu: int = 3):
 
 
+    """
+    
+    Function specifically for MPC type controller(s)
+    of form controller(obs, goal_state, nominal_traj, nominal_cntrl) -> action, new_nominal_traj, new_nominal_cntrl
+    
+    """
+
+
     max_torque = env.max_torque
 
     def scan_step(carry, _):
@@ -652,13 +660,27 @@ def n_rollouts_controller(env: SpacecraftEnvJax,
 
     key, subkey = jax.random.split(key)
     batched_keys = jax.random.split(subkey, n_rollouts)
-    trajectories, _ = jax.vmap(rollout_controller, in_axes=(None, None, 0, None, None, None, None))(env, 
-                                                                                                     controller, 
-                                                                                                     batched_keys, 
-                                                                                                     horizon, 
-                                                                                                     max_ep_steps, 
-                                                                                                     replan_freq)
+    trajectories, _ = jax.vmap(rollout_controller, in_axes=(None, None, 0, None, None, None))(env, 
+                                                                                              controller, 
+                                                                                              batched_keys, 
+                                                                                              horizon, 
+                                                                                              max_ep_steps, 
+                                                                                              replan_freq)
     return trajectories, key
+
+
+def rollout_policy():
+
+
+    """
+    
+    Function to rollout a policy of form policy(obs) -> action
+
+    To be used for standard RL policies like PPO
+    
+    """
+
+    pass
 
 
     

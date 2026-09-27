@@ -23,13 +23,12 @@ sys.path.append(str(MJ_WORK))
 
 import equinox as eqx
 from simulation_env_jax import SpacecraftEnvJax, generate_n_trajectories
-from configs import ExpConfig, SpacecraftEnvConfig, PPOHyperparameters
+from configs import ExpConfig, SpacecraftEnvConfig, ACMPCHyperparameters
 from mj_utils import make_dummy_controller
 
-from time import time
 
 
-from ppo_model import ActorCritic, save_network, load_network
+from acmpc_model import ActorCriticMPC
 
  
  
@@ -594,7 +593,7 @@ def make_train(config, env: SpacecraftEnvJax):
                     )
  
                 jax.lax.cond(
-                    update_idx % config["LOG_EVERY_UPDATES"] == 0,
+                    update_idx % config["LOG_EVERY"] == 0,
                     lambda: jax.debug.callback(print_metrics, update_idx, metrics),
                     lambda: None,
                 )
@@ -636,22 +635,22 @@ def make_train(config, env: SpacecraftEnvJax):
 if __name__ == "__main__":
 
     exp_config = ExpConfig()
-    hyperparams = PPOHyperparameters()
+    hyperparams = ACMPCHyperparameters()
     env_config = SpacecraftEnvConfig()
 
-    PPO_BASE_SAVE_PATH = exp_config.ppo_base_save_path
-    PPO_BASE_LOG_PATH = exp_config.ppo_base_log_path
+    ACMPC_BASE_SAVE_PATH = exp_config.acmpc_base_save_path
+    ACMPC_BASE_LOG_PATH = exp_config.acmpc_base_log_path
 
 
-    PPO_EXPERIMENT_NAME = exp_config.ppo_experiment_name
-    PPO_EXPERIMENT_NOTES = exp_config.ppo_experiment_notes
+    ACMPC_EXPERIMENT_NAME = exp_config.acmpc_experiment_name
+    ACMPC_EXPERIMENT_NOTES = exp_config.acmpc_experiment_notes
 
     NX = exp_config.nx
     NU = exp_config.nu
 
-    RESUME_TRAINING = exp_config.resume_ppo_training
-    RESUME_TIMESTEPS = exp_config.ppo_resume_timesteps
-    RESUME_MODEL_PATH = exp_config.ppo_resume_model_path
+    RESUME_TRAINING = exp_config.resume_acmpc_training
+    RESUME_TIMESTEPS = exp_config.resume_acmpc_timesteps
+    RESUME_MODEL_PATH = exp_config.acmpc_resume_model_path
 
 
     DYNAMICS_PARAMETERS = env_config.spacecraft_dynamics_parameters
@@ -696,9 +695,9 @@ if __name__ == "__main__":
         "NUM_ENVS": hyperparams.n_envs,
         "NUM_STEPS": hyperparams.n_steps,
         "TOTAL_TIMESTEPS": hyperparams.total_timesteps,
-        "RESUME_TRAINING": exp_config.resume_ppo_training,
-        "RESUME_TIMESTEPS": exp_config.ppo_resume_timesteps,
-        "RESUME_MODEL_PATH": exp_config.ppo_resume_model_path,
+        "RESUME_TRAINING": exp_config.resume_acmpc_training,
+        "RESUME_TIMESTEPS": exp_config.resume_acmpc_timesteps,
+        "RESUME_MODEL_PATH": exp_config.acmpc_resume_model_path,
         "UPDATE_EPOCHS": hyperparams.n_epochs,
         "NUM_MINIBATCHES": hyperparams.n_minibatches,
         "MINIBATCH_SIZE": hyperparams.minibatch_size,
@@ -717,13 +716,10 @@ if __name__ == "__main__":
         "NORMALIZE_REWARD": True,
         "BOOTSTRAP_TIMEOUTS": True,
         "LOG_EVERY": hyperparams.log_every,
-        "LOG_EVERY_UPDATES": hyperparams.log_every_updates,
     }
     rng = jax.random.PRNGKey(42)
-    start = time()
     train_jit = jax.jit(make_train(config, env))
     out = train_jit(rng)
-    print(f"Training completed successfully in {time() - start:.2f} seconds.")
 
     # Get stuff 
     runner_state = out["runner_state"]
@@ -732,7 +728,7 @@ if __name__ == "__main__":
     model, opt_state, env_state, obs, ep_return, disc_return, running_stat, key = runner_state
 
     # Save model and optimizer state
-    SAVE_PATH = os.path.join(PPO_BASE_SAVE_PATH, PPO_EXPERIMENT_NAME)
+    SAVE_PATH = os.path.join(ACMPC_BASE_SAVE_PATH, ACMPC_EXPERIMENT_NAME)
     CHECKPOINT_PATH = os.path.join(SAVE_PATH, "checkpoints")
     save_model(model, opt_state, running_stat, key, config["TOTAL_TIMESTEPS"], CHECKPOINT_PATH, final=True)
     

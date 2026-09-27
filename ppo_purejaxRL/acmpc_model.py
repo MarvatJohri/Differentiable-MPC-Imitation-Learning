@@ -34,7 +34,29 @@ QR_OUTPUT_HORIZON = controller_config.qr_output_horizon
 NETWORK_EPSILON = controller_config.network_epsilon
 
 
+def _ortho_linear(in_f: int, out_f: int, key, scale: float) -> eqx.nn.Linear:
+    """eqx.nn.Linear with orthogonal weights and zero bias (standard PPO init)."""
+    layer = eqx.nn.Linear(in_f, out_f, key=key)
+    w = jax.nn.initializers.orthogonal(scale)(key, (out_f, in_f), layer.weight.dtype)
+    return eqx.tree_at(lambda l: (l.weight, l.bias), layer, (w, jnp.zeros_like(layer.bias)))
 
+class MLP(eqx.Module):
+    layers: tuple
+ 
+    def __init__(self, in_size, layers, key, out_size, out_scale):
+        sizes = [in_size, *layers]
+        keys = jax.random.split(key, len(sizes))
+        hidden = tuple(
+            _ortho_linear(sizes[i], sizes[i + 1], keys[i], jnp.sqrt(2.0))
+            for i in range(len(sizes) - 1)
+        )
+        out = _ortho_linear(sizes[-1], out_size, keys[-1], out_scale)
+        self.layers = hidden + (out,)
+ 
+    def __call__(self, x):
+        for layer in self.layers[:-1]:
+            x = jnp.tanh(layer(x))
+        return self.layers[-1](x)
 
 
 def get_activation(activation_name):
@@ -76,7 +98,7 @@ class FeedForwardNetwork(eqx.Module):
 
     def __init__(self, 
                  nx, nu, key, 
-                 layers, activation='relu', output_activation='tanh',
+                 layers, activation='relu', output_activation='tanh', 
                  qr_output_horizon=10, eps=1e-3, decomposition_type='diagonal'):
         self.nx = nx
         self.nu = nu
@@ -110,7 +132,7 @@ class FeedForwardNetwork(eqx.Module):
         keys = jax.random.split(key, len(dims) - 1)
 
         self.layers = [
-            eqx.nn.Linear(dims[i], dims[i + 1], key=keys[i])
+            _ortho_linear(dims[i], dims[i + 1], key=keys[i], scale=jnp.sqrt(2.0))
             for i in range(len(dims) - 1)
         ]
 
@@ -293,7 +315,9 @@ class DiffMPCController(eqx.Module):
         # Build solver once
         self.solver, self.solver_params = build_mpc_solver(self.mpc_horizon, self.nx - 1, self.nu)
 
-       
+        # Store vals of Q, R for debugging
+        self.Q = None
+        self.R = None
 
 
 
@@ -468,7 +492,7 @@ class DiffMPCController(eqx.Module):
         u_nominal = jnp.asarray(u_nominal, dtype=jnp.float64)
 
         theta = self.network(obs)
-        Q, R = network_output_to_QR(theta, self.nx - 1, self.nu, self.network.decomposition_type, self.qr_output_horizon)
+        self.Q, self.R = network_output_to_QR(theta, self.nx - 1, self.nu, self.network.decomposition_type, self.qr_output_horizon)
         # Make prints for debugging 
         # jax.debug.print("Q : {}", Q)
         # jax.debug.print("R : {}", R)
@@ -501,7 +525,7 @@ class DiffMPCController(eqx.Module):
         # jax.debug.print("nom_traj quat norms: {}", jnp.linalg.norm(x_nominal[:, :4], axis=1))
 
         # Form Optimal Control Problem
-        P_data, A_data, q, b = self.form_ocp_moreau(dx0, dxgoal, x_nominal, u_nominal, Q, R)
+        P_data, A_data, q, b = self.form_ocp_moreau(dx0, dxgoal, x_nominal, u_nominal, self.Q, self.R)
 
         # jax.debug.print("A_data NaN: {}, has inf: {}", jnp.isnan(A_data).any(), jnp.isinf(A_data).any())
         # jax.debug.print("P_data range: [{}, {}]", P_data.min(), P_data.max())
@@ -540,6 +564,43 @@ class DiffMPCController(eqx.Module):
 
         
         return action, state_traj, control_traj
+
+
+
+class ActorCriticMPC(eqx.Module):
+    actor: DiffMPCController
+    critic: MLP
+    log_std: jax.Array
+
+    def __init__(self, 
+                 obs_dim, act_dim, layers, key, init_log_std=-0.5,
+                 activation='relu', output_activation='tanh',
+                 qr_output_horizon=10, eps=1e-3, decomposition_type='diagonal'):
+
+        actor_key, critic_key = jax.random.split(key)
+        network = FeedForwardNetwork(obs_dim, act_dim, actor_key, layers, activation, output_activation,
+                                       qr_output_horizon=qr_output_horizon, eps=eps, decomposition_type=decomposition_type)
+        
+        self.actor = DiffMPCController(
+            network=network,
+            mpc_horizon=MPC_HORIZON,
+            dt=DT,
+            state_limits=STATE_LIMITS_MRP,
+            control_limits=CONTROL_LIMITS,
+            dynamics_params=DYNAMICS_PARAMS
+        )
+        self.critic = MLP(obs_dim, layers, critic_key, 1, 1.0)
+        self.log_std = jnp.full((act_dim,), init_log_std)
+
+
+    def mean(self, obs, x_goal, x_nominal, u_nominal):
+        
+        action, state_traj, control_traj = self.actor(obs, x_goal, x_nominal, u_nominal)
+        return action, state_traj, control_traj
+
+    def value(self, obs):
+        return self.critic(obs)[0]
+
 
 
 
