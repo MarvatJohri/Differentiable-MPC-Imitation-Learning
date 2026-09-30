@@ -1,4 +1,5 @@
 import jax
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import optax
 from typing import Sequence, NamedTuple, Any
@@ -26,6 +27,7 @@ from simulation_env_jax import SpacecraftEnvJax, generate_n_trajectories
 from configs import ExpConfig, SpacecraftEnvConfig, ACMPCHyperparameters
 from mj_utils import make_dummy_controller
 
+from time import time
 
 
 from acmpc_model import ActorCriticMPC
@@ -42,17 +44,7 @@ def gaussian_log_prob(mean, log_std, action):
 def gaussian_entropy(log_std):
     return jnp.sum(log_std + 0.5 * jnp.log(2 * jnp.pi * jnp.e))
 
-    
 
-def sample_actions(model: ActorCritic, obs, key):
-    # Assume batched observations
-    # of size obs.shape = (batch_size, obs_dim)
-    mean = jax.vmap(model.mean)(obs)
-    value = jax.vmap(model.value)(obs)
-    noise = jax.random.normal(key, mean.shape, dtype=mean.dtype)
-    action = mean + jnp.exp(model.log_std) * noise
-    log_prob = gaussian_log_prob(mean, model.log_std, action)
-    return action, log_prob, value
 
 
 
@@ -64,7 +56,9 @@ class Transition(NamedTuple):
     reward: jnp.ndarray
     log_prob: jnp.ndarray
     obs: jnp.ndarray
-    # info: jnp.ndarray
+    x_goal: jnp.ndarray
+    x_nominal: jnp.ndarray
+    u_nominal: jnp.ndarray
 
 
 def lr_scheduler(start_lr: float, schedule_type: str, end_lr: float, 
@@ -95,35 +89,83 @@ def lr_scheduler(start_lr: float, schedule_type: str, end_lr: float,
         raise ValueError(f"Unsupported learning rate schedule type: {schedule_type}")
 
 
-class RunningStat(NamedTuple):
+# class RunningStat(NamedTuple):
+#     mean: jnp.ndarray
+#     var: jnp.ndarray
+#     count: jnp.ndarray
+ 
+ 
+# def init_running_stat() -> RunningStat:
+#     return RunningStat(jnp.zeros(()), jnp.ones(()), jnp.asarray(1e-4))  
+ 
+ 
+# def update_running_stat(s: RunningStat, x: jnp.ndarray) -> RunningStat:
+#     """Parallel (Chan et al.) update of mean/var with a batch x."""
+#     b_mean, b_var, b_count = x.mean(), x.var(), x.size
+#     delta = b_mean - s.mean
+#     tot = s.count + b_count
+#     new_mean = s.mean + delta * b_count / tot
+#     m2 = s.var * s.count + b_var * b_count + delta ** 2 * s.count * b_count / tot
+#     return RunningStat(new_mean, m2 / tot, tot)
+
+class RunningMeanStd(NamedTuple):
+    """Running mean/std for observations (per-dimension)."""
     mean: jnp.ndarray
     var: jnp.ndarray
     count: jnp.ndarray
- 
- 
-def init_running_stat() -> RunningStat:
-    return RunningStat(jnp.zeros(()), jnp.ones(()), jnp.asarray(1e-4))  
- 
- 
-def update_running_stat(s: RunningStat, x: jnp.ndarray) -> RunningStat:
-    """Parallel (Chan et al.) update of mean/var with a batch x."""
-    b_mean, b_var, b_count = x.mean(), x.var(), x.size
-    delta = b_mean - s.mean
-    tot = s.count + b_count
-    new_mean = s.mean + delta * b_count / tot
-    m2 = s.var * s.count + b_var * b_count + delta ** 2 * s.count * b_count / tot
-    return RunningStat(new_mean, m2 / tot, tot)
+
+
+def init_obs_rms(obs_dim: int) -> RunningMeanStd:
+    return RunningMeanStd(
+        mean=jnp.zeros(obs_dim),
+        var=jnp.ones(obs_dim),
+        count=jnp.array(1e-4)
+    )
+
+
+def init_ret_rms() -> RunningMeanStd:
+    return RunningMeanStd(
+        mean=jnp.zeros(()),
+        var=jnp.ones(()),
+        count=jnp.array(1e-4)
+    )
+
+
+def update_rms(rms: RunningMeanStd, batch: jnp.ndarray) -> RunningMeanStd:
+    """Update running mean/std with a batch of data. Works for any shape."""
+    batch = batch.reshape(-1, *rms.mean.shape) if rms.mean.ndim > 0 else batch.flatten()
+    batch_mean = batch.mean(axis=0)
+    batch_var = batch.var(axis=0)
+    batch_count = batch.shape[0]
+    
+    delta = batch_mean - rms.mean
+    tot_count = rms.count + batch_count
+    
+    new_mean = rms.mean + delta * batch_count / tot_count
+    m_a = rms.var * rms.count
+    m_b = batch_var * batch_count
+    M2 = m_a + m_b + delta**2 * rms.count * batch_count / tot_count
+    new_var = M2 / tot_count
+    
+    return RunningMeanStd(new_mean, new_var, tot_count)
+
+
+def normalize_obs(obs: jnp.ndarray, rms: RunningMeanStd, clip: float = 10.0) -> jnp.ndarray:
+    """Normalize observations using running statistics."""
+    return jnp.clip((obs - rms.mean) / jnp.sqrt(rms.var + 1e-8), -clip, clip)
 
 
 def save_train_state(opt_state: optax.OptState, 
-                     stats: RunningStat, 
+                     obs_rms: RunningMeanStd,
+                     ret_rms: RunningMeanStd, 
                      key: jax.random.PRNGKey, 
                      iteration: int, 
                      train_state_file: str):
 
     model_state_checkpoint = {
             "opt_state": opt_state,
-            "running_stat": stats,
+            "obs_stat": obs_rms,
+            "ret_rms": ret_rms,
             "key": key,
             "iteration": iteration,
         }
@@ -132,7 +174,8 @@ def save_train_state(opt_state: optax.OptState,
 
 def save_model(model: ActorCritic, 
                opt_state: optax.OptState, 
-               stats: RunningStat, 
+               obs_rms: RunningMeanStd,
+               ret_rms:RunningMeanStd, 
                key: jax.random.PRNGKey, 
                iteration: int, 
                checkpoint_path: str,
@@ -149,38 +192,44 @@ def save_model(model: ActorCritic,
 
     os.makedirs(checkpoint_path, exist_ok=True)
     save_network(model, checkpoint_file)
-    save_train_state(opt_state, stats, key, iteration, train_state_file)
+    save_train_state(opt_state, obs_rms, ret_rms, key, iteration, train_state_file)
 
 
 
 def load_train_state(opt_state: optax.OptState, 
-                     stats: RunningStat, train_state_file: str):
+                     obs_rms: RunningMeanStd,
+                     ret_rms:RunningMeanStd, 
+                     train_state_file: str):
+    
     if not os.path.exists(train_state_file):
         raise FileNotFoundError(f"Train state file {train_state_file} does not exist.")
     
     train_state_checkpoint = {
         "opt_state": opt_state,
-        "running_stat": stats,
+        "obs_rms": obs_rms,
+        "ret_rms": ret_rms,
         "key": jax.random.PRNGKey(0),  # Placeholder, will be replaced
         "iteration": 0,  # Placeholder, will be replaced
     }
 
     train_state = eqx.tree_deserialise_leaves(train_state_file, train_state_checkpoint)
     opt_state = train_state["opt_state"]
-    stats = train_state["running_stat"]
+    obs_rms = train_state["obs_rms"]
+    ret_rms = train_state["ret_rms"]
     key = train_state["key"]
     iteration = train_state["iteration"]
 
     print(f"Train state loaded from {train_state_file}")
 
-    return opt_state, stats, key, iteration
+    return opt_state, obs_rms, ret_rms, key, iteration
 
 
 
 
 def load_model(model: ActorCritic, 
                opt_state: optax.OptState, 
-               stats: RunningStat, 
+               obs_rms: RunningMeanStd,
+               ret_rms: RunningMeanStd, 
                checkpoint_path: str, 
                iteration: int, 
                final: bool = False):
@@ -194,9 +243,9 @@ def load_model(model: ActorCritic,
         train_state_file = os.path.join(checkpoint_path, f"train_state_{iteration}_steps.eqx")
 
     model = load_network(model, checkpoint_file)
-    opt_state, stats, key, iteration = load_train_state(opt_state, stats, train_state_file)
+    opt_state, obs_rms, ret_rms, key, iteration = load_train_state(opt_state, obs_rms, ret_rms, train_state_file)
 
-    return model, opt_state, stats, key, iteration
+    return model, opt_state, obs_rms, ret_rms, key, iteration
 
 
 
@@ -217,6 +266,15 @@ def make_train(config, env: SpacecraftEnvJax):
     minibatch_size = config["MINIBATCH_SIZE"]
     assert batch_size % minibatch_size == 0, "Batch size must be divisible by minibatch size."
     num_minibatches = batch_size // minibatch_size
+
+    # mpc hyperparams
+    output_activation = config["OUTPUT_ACTIVATION"]
+    network_epsilon = config["NETWORK_EPSILON"]
+    decomposition_type = config["DECOMPOSITION_TYPE"]
+    qr_output_horizon = config["QR_OUTPUT_HORIZON"]
+    mpc_horizon = config["MPC_HORIZON"]
+    replan_freq = config["REPLAN_FREQUENCY"]
+
 
 
 
@@ -274,8 +332,8 @@ def make_train(config, env: SpacecraftEnvJax):
         )
         return advantages, advantages + traj.value
 
-    def loss_fn(model: ActorCritic, batch: Transition, gae, targets):
-        mean = jax.vmap(model.mean)(batch.obs)
+    def loss_fn(model: ActorCriticMPC, batch: Transition, gae, targets):
+        mean, _, __ = jax.vmap(model.mean)(batch.obs)
         value = jax.vmap(model.value)(batch.obs)
         log_prob = gaussian_log_prob(mean, model.log_std, batch.action)
 
@@ -305,6 +363,10 @@ def make_train(config, env: SpacecraftEnvJax):
         ratio = jnp.exp(log_ratio)
         gae = (gae - gae.mean()) / (gae.std() + 1e-8)
 
+        # jax.debug.print("log_ratio stats: min={} max={} mean={} | ratio stats: min={} max={} mean={}", 
+        #             log_ratio.min(), log_ratio.max(), log_ratio.mean(),
+        #             ratio.min(), ratio.max(), ratio.mean())
+
         loss_actor1 = ratio * gae
         loss_actor2 = (
             jnp.clip(
@@ -324,6 +386,101 @@ def make_train(config, env: SpacecraftEnvJax):
 
     grad_fn = eqx.filter_value_and_grad(loss_fn, has_aux=True)
 
+
+
+    def init_nominal_trajectories(states: jnp.ndarray, key: jax.random.PRNGKey):
+       
+        batch_size = states.shape[0]
+        # Tile state across horizon
+        nominal_traj = jnp.tile(states[:, None, :], (1, mpc_horizon + 1, 1))
+        # Small random noise for controls (as in rollout_controller)
+        nominal_cntrl = 1e-8 * jax.random.normal(key, shape=(batch_size, mpc_horizon, act_dim), dtype=jnp.float64)
+        return nominal_traj, nominal_cntrl
+
+
+    def shift_nominal_trajectories(nominal_traj: jnp.ndarray, nominal_cntrl: jnp.ndarray):
+      
+        shifted_traj = jnp.concatenate([
+            nominal_traj[:, 1:, :],
+            nominal_traj[:, -1:, :]
+        ], axis=1)
+        
+        shifted_cntrl = jnp.concatenate([
+            nominal_cntrl[:, 1:, :],
+            nominal_cntrl[:, -1:, :]
+        ], axis=1)
+        
+        action = shifted_cntrl[:, 0, :]
+        
+        return shifted_traj, shifted_cntrl, action
+
+    def sample_actions_mpc(model: ActorCriticMPC, obs: jnp.ndarray, 
+                           goal_state: jnp.ndarray, nominal_traj: jnp.ndarray, 
+                           nominal_cntrl: jnp.ndarray, step_idx: jnp.ndarray, key: jax.random.PRNGKey):
+        """
+        Sample actions using the MPC actor with replan frequency logic.
+        
+        This follows the pattern from rollout_controller:
+        - If step_idx % replan_freq == 0: call controller, get new trajectories
+        - Otherwise: shift trajectories, use first control
+        
+        Args:
+            model: ActorCriticMPC model
+            obs: Normalized observations, shape (num_envs, obs_dim)
+            goal_state: Goal states, shape (num_envs, state_dim)
+            nominal_traj: Nominal state trajectories, shape (num_envs, horizon+1, state_dim)
+            nominal_cntrl: Nominal control trajectories, shape (num_envs, horizon, act_dim)
+            step_idx: Current step index (scalar), used for replan frequency
+            key: Random key for sampling
+            
+        Returns:
+            action: Sampled actions (raw torque), shape (num_envs, act_dim)
+            log_prob: Log probabilities, shape (num_envs,)
+            value: Value estimates, shape (num_envs,)
+            new_nominal_traj: Updated nominal trajectories
+            new_nominal_cntrl: Updated nominal controls
+        """
+        
+        def do_replan(args):
+            """Call the MPC controller to get new action and trajectories."""
+            obs, goal_state, nominal_traj, nominal_cntrl, key = args
+            
+            # Call MPC actor for each environment
+            # model.mean returns (action, state_traj, control_traj)
+            mean_action, new_traj, new_cntrl = jax.vmap(model.mean)(
+                obs, goal_state, nominal_traj, nominal_cntrl
+            )
+            return mean_action, new_traj, new_cntrl
+        
+        def no_replan(args):
+            """Shift trajectories and use first control."""
+            obs, goal_state, nominal_traj, nominal_cntrl, key = args
+            
+            shifted_traj, shifted_cntrl, mean_action = shift_nominal_trajectories(
+                nominal_traj, nominal_cntrl
+            )
+            return mean_action, shifted_traj, shifted_cntrl
+        
+        # Decide whether to replan based on step index
+        mean_action, new_nominal_traj, new_nominal_cntrl = jax.lax.cond(
+            step_idx % replan_freq == 0,
+            do_replan,
+            no_replan,
+            operand=(obs, goal_state, nominal_traj, nominal_cntrl, key)
+        )
+        
+        # Get value estimates (always computed, independent of replan)
+        value = jax.vmap(model.value)(obs)
+        
+        # Sample action with exploration noise
+        noise = jax.random.normal(key, mean_action.shape)
+        action = mean_action + jnp.exp(model.log_std) * noise
+        
+        # Compute log probability
+        log_prob = gaussian_log_prob(mean_action, model.log_std, action)
+        
+        return action, log_prob, value, new_nominal_traj, new_nominal_cntrl
+
     
 
     def train(key):
@@ -334,12 +491,23 @@ def make_train(config, env: SpacecraftEnvJax):
 
         # Initialize actor critic network
         key, subkey = jax.random.split(key)
-        model = ActorCritic(
-            obs_dim=obs_dim,
-            act_dim=act_dim,
-            layers=config["NET_ARCH"],
-            key=subkey,
-        )
+        # model = ActorCritic(
+        #     obs_dim=obs_dim,
+        #     act_dim=act_dim,
+        #     layers=config["NET_ARCH"],
+        #     log_std_init=config["LOG_STD_INIT"],
+        #     key=subkey,
+        # )
+        model = ActorCriticMPC(obs_dim=obs_dim, 
+                               act_dim=act_dim,
+                               layers=config["NET_ARCH"],
+                               key=subkey,
+                               init_log_std=config["LOG_STD_INIT"],
+                               activation=config["ACTIVATION"],
+                               output_activation=config["OUTPUT_ACTIVATION"],
+                               qr_output_horizon=config["QR_OUTPUT_HORIZON"],
+                               eps=config["NETWORK_EPS"],
+                               decomposition_type=config["DECOMPOSITION_TYPE"])
 
 
         optimizer = optax.chain(
@@ -358,20 +526,24 @@ def make_train(config, env: SpacecraftEnvJax):
         env_state, obs, _ = v_reset(reset_keys)
         ep_return = jnp.zeros((config["NUM_ENVS"],),dtype=obs.dtype)
         disc_return = jnp.zeros((config["NUM_ENVS"],),dtype=obs.dtype)
-        running_stat = init_running_stat()
+        # running_stat = init_running_stat()
+
+        obs_rms = init_obs_rms(obs_dim)
+        ret_rms = init_ret_rms()
 
         # TRAIN LOOP
         def _update_step(carry_top, update_idx):
             # Collect stuff to be used in later jax.lax.scan calls
             # Rename carry top to smthng else later
-            model, opt_state, env_state, obs, ep_return, disc_return, rstat, key = carry_top
+            model, opt_state, env_state, obs, goal_state, nominal_traj, nominal_cntrl, ep_return, disc_return, obs_rms, ret_rms, key = carry_top
 
 
 
             # COLLECT TRAJECTORIES
             def _env_step(carry, unused):
                 # train_state, env_state, last_obs, rng = runner_state
-                env_states, obs, ep_return, discounted_return, running_stat, key = carry
+                # env_states, obs, ep_return, discounted_return, running_stat, key = carry
+                env_states, obs, ep_return, discounted_return, obs_rms, ret_rms, key = carry
                 key, subkey = jax.random.split(key)
 
                 # SELECT ACTION
@@ -379,7 +551,18 @@ def make_train(config, env: SpacecraftEnvJax):
                 # pi, value = network.apply(train_state.params, last_obs)
                 # action = pi.sample(seed=_rng)
                 # log_prob = pi.log_prob(action)
-                action, log_prob, value = sample_actions(model, obs, subkey)
+
+                obs_rms = update_rms(obs_rms, obs)
+
+                obs_norm = normalize_obs(obs, obs_rms)
+                action, log_prob, value, new_nominal_traj, new_nominal_cntrl = sample_actions_mpc(model,
+                                                                                                  obs,
+                                                                                                  goal_state,
+                                                                                                  nominal_traj,
+                                                                                                  nominal_cntrl,
+                                                                                                  step_idx,
+                                                                                                  key)
+
 
                 # STEP ENV
 
@@ -397,11 +580,18 @@ def make_train(config, env: SpacecraftEnvJax):
                 finished_return = jnp.where(done, ep_return, 0.0)
                 ep_return = ep_return * not_done
 
+                # # Update obs running statistics
+                # obs_rms = update_rms(obs_rms, next_obs)
+
                 reward = raw_reward
                 if config["NORMALIZE_REWARD"]:
                     discounted_return = discounted_return * config["GAMMA"] * not_done + raw_reward
-                    running_stat = update_running_stat(running_stat, discounted_return)
-                    reward = raw_reward / jnp.sqrt(running_stat.var + 1e-8)
+                    # running_stat = update_running_stat(running_stat, discounted_return)
+                    # reward = raw_reward / jnp.sqrt(running_stat.var + 1e-8)
+
+                    ret_rms = update_rms(ret_rms, discounted_return)
+                    reward = raw_reward / jnp.sqrt(ret_rms.var + 1e-8)
+                    reward = jnp.clip(reward, -10.0, 10.0)
  
                 # Time-limit truncation: bootstrap with V(terminal obs).
                 # `info` holds the PRE-reset state / goal / step_count from env.step.
@@ -409,7 +599,9 @@ def make_train(config, env: SpacecraftEnvJax):
                     term_state, goal_state, term_steps, _ = info
                     timeout = done & (term_steps >= env.max_ep_steps) & ~v_failed(term_state)
                     term_obs = v_get_obs(term_state, goal_state)
-                    term_value = jax.vmap(model.value)(term_obs)
+                    term_obs_norm = normalize_obs(term_obs, obs_rms)
+                    # term_value = jax.vmap(model.value)(term_obs)
+                    term_value = jax.vmap(model.value)(term_obs_norm)
                     reward = reward + config["GAMMA"] * term_value * timeout.astype(reward.dtype)
 
 
@@ -419,26 +611,31 @@ def make_train(config, env: SpacecraftEnvJax):
                 #     done, action, value, reward, log_prob, obs, info
                 # )
                 transition = Transition(
-                    done, action, value, reward, log_prob, obs
+                    done, action, value, reward, log_prob, obs_norm
                 )
                 # runner_state = (train_state, env_states, obsv, rng)
-                carry = (env_states, next_obs, ep_return, discounted_return, running_stat, key)
+                # carry = (env_states, next_obs, ep_return, discounted_return, running_stat, key)
+                carry = (env_states, next_obs, ep_return, discounted_return, obs_rms, ret_rms, key)
                 return carry, (transition, finished_return)
 
             # runner_state, traj_batch = jax.lax.scan(
             #     _env_step, runner_state, None, config["NUM_STEPS"]
             # )
 
-            (env_state, obs, ep_return, disc_return, rstat, key), (traj, finished_return) = jax.lax.scan(
-                _env_step, (env_state, obs, ep_return, disc_return, rstat, key), None, length=config["NUM_STEPS"]
+            # (env_state, obs, ep_return, disc_return, rstat, key), (traj, finished_return) = jax.lax.scan(
+            #     _env_step, (env_state, obs, ep_return, disc_return, rstat, key), None, length=config["NUM_STEPS"]
+            # )
+            (env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key), (traj, finished_return) = jax.lax.scan(
+                _env_step, (env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key), None, length=config["NUM_STEPS"]
             )
 
 
             # CALCULATE ADVANTAGE
             # train_state, env_state, last_obs, rng = runner_state
             # _, last_val = network.apply(train_state.params, last_obs)
-
-            last_val = jax.vmap(model.value)(obs)
+            obs_norm = normalize_obs(obs, obs_rms)
+            # last_val = jax.vmap(model.value)(obs)
+            last_val = jax.vmap(model.value)(obs_norm)
             advantages, targets = calculate_gae(traj, last_val)
 
 
@@ -481,13 +678,23 @@ def make_train(config, env: SpacecraftEnvJax):
                     traj_batch, advantages, targets = output
 
                     # Get loss and grads
+
+                    old_log_std = model.log_std.copy()
+
                     (loss, aux), grads = grad_fn(model, traj_batch, advantages, targets)
+
+                    # # Check grads for log_std, it _should_ be getting updated
+                    # jax.debug.print("log_std grad norm: {}", jnp.linalg.norm(grads.log_std))
 
                     # Update using optimizer
                     updates, opt_state = optimizer.update(grads, opt_state, eqx.filter(model, eqx.is_inexact_array))                    
 
                     # Apply updates
                     model = eqx.apply_updates(model, updates)
+
+                    # DEBUG: log_std AFTER update
+                    # jax.debug.print("log_std before: {} | after: {} | diff: {}", 
+                    #                 old_log_std[0], model.log_std[0], model.log_std[0] - old_log_std[0])
 
                     # grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     # total_loss, grads = grad_fn(
@@ -543,6 +750,9 @@ def make_train(config, env: SpacecraftEnvJax):
             losses, aux = loss_info
             value_loss, pg_loss, entropy, approx_kl = aux
 
+            # Unpack model
+            model, opt_state, key = update_state
+
             total_loss = losses.mean()
             value_loss = value_loss.mean()
             pg_loss = pg_loss.mean()
@@ -553,7 +763,7 @@ def make_train(config, env: SpacecraftEnvJax):
 
             metrics = {
                 "mean_reward": traj.reward.mean(),   # in normalized units if NORMALIZE_REWARD
-                "reward_scale": jnp.sqrt(rstat.var), # what raw rewards are divided by
+                "reward_scale": jnp.sqrt(ret_rms.var), # what raw rewards are divided by
                 "n_episodes": n_eps,
                 "episode_return": jnp.where(n_eps > 0, finished_return.sum() / jnp.maximum(n_eps, 1), jnp.nan),
                 "total_loss": total_loss,
@@ -593,7 +803,7 @@ def make_train(config, env: SpacecraftEnvJax):
                     )
  
                 jax.lax.cond(
-                    update_idx % config["LOG_EVERY"] == 0,
+                    update_idx % config["LOG_EVERY_UPDATES"] == 0,
                     lambda: jax.debug.callback(print_metrics, update_idx, metrics),
                     lambda: None,
                 )
@@ -605,7 +815,8 @@ def make_train(config, env: SpacecraftEnvJax):
             
             # Update runner step for update_step iteration
 
-            runner_state = (model, opt_state, env_state, obs, ep_return, disc_return, rstat, key)
+            # runner_state = (model, opt_state, env_state, obs, ep_return, disc_return, rstat, key)
+            runner_state = (model, opt_state, env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key)
             
             
             # Return EVERYTHING
@@ -620,7 +831,8 @@ def make_train(config, env: SpacecraftEnvJax):
         # )
 
         # Run update steps lax scan
-        carry_top = (model, opt_state, env_state, obs, ep_return, disc_return, running_stat, key)
+        # carry_top = (model, opt_state, env_state, obs, ep_return, disc_return, running_stat, key)
+        carry_top = (model, opt_state, env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key)
         carry_top, metric = jax.lax.scan(
             _update_step, carry_top, jnp.arange(config["NUM_UPDATES"]), length=config["NUM_UPDATES"]
         )   
@@ -648,9 +860,9 @@ if __name__ == "__main__":
     NX = exp_config.nx
     NU = exp_config.nu
 
-    RESUME_TRAINING = exp_config.resume_acmpc_training
-    RESUME_TIMESTEPS = exp_config.resume_acmpc_timesteps
-    RESUME_MODEL_PATH = exp_config.acmpc_resume_model_path
+    RESUME_TRAINING = exp_config.resume_ppo_training
+    RESUME_TIMESTEPS = exp_config.ppo_resume_timesteps
+    RESUME_MODEL_PATH = exp_config.ppo_resume_model_path
 
 
     DYNAMICS_PARAMETERS = env_config.spacecraft_dynamics_parameters
@@ -694,14 +906,22 @@ if __name__ == "__main__":
         "LEARNING_RATE_FINAL": hyperparams.learning_rate_final,
         "NUM_ENVS": hyperparams.n_envs,
         "NUM_STEPS": hyperparams.n_steps,
+        "MPC_HORIZON": hyperparams.mpc_horizon,
+        "OUTPUT_ACTIVATION": hyperparams.output_activation,
+        "NETWORK_EPSILON": hyperparams.network_epsilon,
+        "DECOMPOSITION_TYPE": hyperparams.qr_output_horizon,
+        "QR_OUTPUT_HORIZON": hyperparams.qr_output_horizon,
+        "MPC_HORIZON": hyperparams.mpc_horizon,
+        "REPLAN_FREQUENCY": hyperparams.replan_frequency,
         "TOTAL_TIMESTEPS": hyperparams.total_timesteps,
-        "RESUME_TRAINING": exp_config.resume_acmpc_training,
-        "RESUME_TIMESTEPS": exp_config.resume_acmpc_timesteps,
-        "RESUME_MODEL_PATH": exp_config.acmpc_resume_model_path,
+        "RESUME_TRAINING": exp_config.resume_ppo_training,
+        "RESUME_TIMESTEPS": exp_config.ppo_resume_timesteps,
+        "RESUME_MODEL_PATH": exp_config.ppo_resume_model_path,
         "UPDATE_EPOCHS": hyperparams.n_epochs,
         "NUM_MINIBATCHES": hyperparams.n_minibatches,
         "MINIBATCH_SIZE": hyperparams.minibatch_size,
         "GAMMA": hyperparams.gamma,
+        "LOG_STD_INIT": hyperparams.log_std_init,
         "GAE_LAMBDA": hyperparams.gae_lambda,
         "CLIP_EPS": hyperparams.clip_range,
         "ENT_COEF": hyperparams.ent_coef,
@@ -716,19 +936,23 @@ if __name__ == "__main__":
         "NORMALIZE_REWARD": True,
         "BOOTSTRAP_TIMEOUTS": True,
         "LOG_EVERY": hyperparams.log_every,
+        "LOG_EVERY_UPDATES": hyperparams.log_every_updates,
     }
     rng = jax.random.PRNGKey(42)
+    start = time()
     train_jit = jax.jit(make_train(config, env))
     out = train_jit(rng)
+    print(f"Training completed successfully in {time() - start:.2f} seconds.")
 
     # Get stuff 
     runner_state = out["runner_state"]
     metrics = out["metrics"]
 
-    model, opt_state, env_state, obs, ep_return, disc_return, running_stat, key = runner_state
+    # model, opt_state, env_state, obs, ep_return, disc_return, running_stat, key = runner_state
+    model, opt_state, env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key = runner_state
 
     # Save model and optimizer state
     SAVE_PATH = os.path.join(ACMPC_BASE_SAVE_PATH, ACMPC_EXPERIMENT_NAME)
-    CHECKPOINT_PATH = os.path.join(SAVE_PATH, "checkpoints")
-    save_model(model, opt_state, running_stat, key, config["TOTAL_TIMESTEPS"], CHECKPOINT_PATH, final=True)
+    save_model(model, opt_state, obs_rms, ret_rms, key, config["TOTAL_TIMESTEPS"], SAVE_PATH, final=True)
+    print(f"Model saved at {SAVE_PATH}/final_model.eqx")
     

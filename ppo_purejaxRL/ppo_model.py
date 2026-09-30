@@ -41,12 +41,12 @@ class ActorCritic(eqx.Module):
     critic: MLP
     log_std: jax.Array          
  
-    def __init__(self, obs_dim, act_dim, layers, key, init_log_std=-0.5):
+    def __init__(self, obs_dim, act_dim, layers, key, log_std_init=-0.5):
         actor_key, critic_key = jax.random.split(key)
         # Std PPO initialization: small init for actor, larger for critic
         self.actor = MLP(obs_dim, layers, actor_key, act_dim, 0.01)   # small init -> ~0 mean actions
         self.critic = MLP(obs_dim, layers, critic_key, 1, 1.0)
-        self.log_std = jnp.full((act_dim,), init_log_std)
+        self.log_std = jnp.full((act_dim,), log_std_init, dtype=jnp.float64)
  
     # These operate on a SINGLE obs; use jax.vmap for batches.
     def mean(self, obs):

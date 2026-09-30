@@ -137,11 +137,12 @@ class PPOHyperparameters:
     n_envs: int = 3
     n_steps: int = 1500
     n_epochs: int = 10
-    minibatch_size: int = 1500
-    n_minibatches: int = 3
+    minibatch_size: int = 500
+    n_minibatches: int = 9
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_range: float = 0.2
+    log_std_init: float = 0.0
     ent_coef: float = 1e-2
     vf_coef: float = 0.5
     clip_val_loss: bool = False
@@ -170,6 +171,7 @@ class ACMPCHyperparameters:
     gae_lambda: float = 0.95
     clip_range: float = 0.2
     ent_coef: float = 1e-2
+    log_std_init: float = 0.0
     vf_coef: float = 0.5
     clip_val_loss: bool = False
     vf_clip_eps: float = 0.2
@@ -178,6 +180,7 @@ class ACMPCHyperparameters:
     checkpoint_freq: int = 100_000
     log_every: int = 50_000
     log_every_updates: int = 10
+    activation: str = 'relu'
     output_activation: str = 'tanh'
     network_epsilon: float = 1e-3
     decomposition_type: str = 'diagonal'
