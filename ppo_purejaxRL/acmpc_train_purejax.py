@@ -2,7 +2,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import optax
-from typing import Sequence, NamedTuple, Any
+from typing import Sequence, NamedTuple, Any, Tuple
 import sys
 # from wrappers import (
 #     LogWrapper,
@@ -333,7 +333,7 @@ def make_train(config, env: SpacecraftEnvJax):
         return advantages, advantages + traj.value
 
     def loss_fn(model: ActorCriticMPC, batch: Transition, gae, targets):
-        mean, _, __ = jax.vmap(model.mean)(batch.obs)
+        mean, _, __ = jax.vmap(model.mean)(batch.obs, batch.x_goal, batch.x_nominal, batch.u_nominal)
         value = jax.vmap(model.value)(batch.obs)
         log_prob = gaussian_log_prob(mean, model.log_std, batch.action)
 
@@ -498,7 +498,7 @@ def make_train(config, env: SpacecraftEnvJax):
         #     log_std_init=config["LOG_STD_INIT"],
         #     key=subkey,
         # )
-        model = ActorCriticMPC(obs_dim=obs_dim, 
+        controller = ActorCriticMPC(obs_dim=obs_dim, 
                                act_dim=act_dim,
                                layers=config["NET_ARCH"],
                                key=subkey,
@@ -514,7 +514,7 @@ def make_train(config, env: SpacecraftEnvJax):
             optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
             optax.adam(learning_rate=lr, eps=1e-5),
         )
-        opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+        opt_state = optimizer.init(eqx.filter(controller.network, eqx.is_inexact_array))
 
         # INIT ENV
         # rng, _rng = jax.random.split(rng)
@@ -535,7 +535,7 @@ def make_train(config, env: SpacecraftEnvJax):
         def _update_step(carry_top, update_idx):
             # Collect stuff to be used in later jax.lax.scan calls
             # Rename carry top to smthng else later
-            model, opt_state, env_state, obs, goal_state, nominal_traj, nominal_cntrl, ep_return, disc_return, obs_rms, ret_rms, key = carry_top
+            controller, opt_state, env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key = carry_top
 
 
 
@@ -543,7 +543,7 @@ def make_train(config, env: SpacecraftEnvJax):
             def _env_step(carry, unused):
                 # train_state, env_state, last_obs, rng = runner_state
                 # env_states, obs, ep_return, discounted_return, running_stat, key = carry
-                env_states, obs, ep_return, discounted_return, obs_rms, ret_rms, key = carry
+                env_states, obs, ep_return, discounted_return, nominal_traj, nominal_cntrl, obs_rms, ret_rms, key, step_idx = carry
                 key, subkey = jax.random.split(key)
 
                 # SELECT ACTION
@@ -555,13 +555,13 @@ def make_train(config, env: SpacecraftEnvJax):
                 obs_rms = update_rms(obs_rms, obs)
 
                 obs_norm = normalize_obs(obs, obs_rms)
-                action, log_prob, value, new_nominal_traj, new_nominal_cntrl = sample_actions_mpc(model,
-                                                                                                  obs,
-                                                                                                  goal_state,
+                action, log_prob, value, new_nominal_traj, new_nominal_cntrl = sample_actions_mpc(controller,
+                                                                                                  obs_norm,
+                                                                                                  env_states.goal_state,
                                                                                                   nominal_traj,
                                                                                                   nominal_cntrl,
                                                                                                   step_idx,
-                                                                                                  key)
+                                                                                                  subkey)
 
 
                 # STEP ENV
@@ -601,7 +601,7 @@ def make_train(config, env: SpacecraftEnvJax):
                     term_obs = v_get_obs(term_state, goal_state)
                     term_obs_norm = normalize_obs(term_obs, obs_rms)
                     # term_value = jax.vmap(model.value)(term_obs)
-                    term_value = jax.vmap(model.value)(term_obs_norm)
+                    term_value = jax.vmap(controller.value)(term_obs_norm)
                     reward = reward + config["GAMMA"] * term_value * timeout.astype(reward.dtype)
 
 
@@ -610,13 +610,35 @@ def make_train(config, env: SpacecraftEnvJax):
                 # transition = Transition(
                 #     done, action, value, reward, log_prob, obs, info
                 # )
-                transition = Transition(
-                    done, action, value, reward, log_prob, obs_norm
+
+                # class Transition(
+                #     done: ndarray,
+                #     action: ndarray,
+                #     value: ndarray,
+                #     reward: ndarray,
+                #     log_prob: ndarray,
+                #     obs: ndarray,
+                #     x_goal: ndarray,
+                #     x_nominal: ndarray,
+                #     u_nominal: ndarray
+                #     )
+                # transition = Transition(
+                #     done, action, value, reward, log_prob, obs_norm
+                # )
+
+                transition_mpc = Transition(
+                    done, action, value, reward, log_prob, obs_norm, env_states.goal_state, new_nominal_traj, new_nominal_cntrl
                 )
+
+
                 # runner_state = (train_state, env_states, obsv, rng)
                 # carry = (env_states, next_obs, ep_return, discounted_return, running_stat, key)
-                carry = (env_states, next_obs, ep_return, discounted_return, obs_rms, ret_rms, key)
-                return carry, (transition, finished_return)
+
+                # env_states, obs, ep_return, discounted_return, obs_rms, ret_rms, key, step_idx = carry_new
+
+                carry = (env_states, next_obs, ep_return, discounted_return, new_nominal_traj, new_nominal_cntrl, obs_rms, ret_rms, key, step_idx + 1)
+
+                return carry, (transition_mpc, finished_return)
 
             # runner_state, traj_batch = jax.lax.scan(
             #     _env_step, runner_state, None, config["NUM_STEPS"]
@@ -625,9 +647,21 @@ def make_train(config, env: SpacecraftEnvJax):
             # (env_state, obs, ep_return, disc_return, rstat, key), (traj, finished_return) = jax.lax.scan(
             #     _env_step, (env_state, obs, ep_return, disc_return, rstat, key), None, length=config["NUM_STEPS"]
             # )
-            (env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key), (traj, finished_return) = jax.lax.scan(
-                _env_step, (env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key), None, length=config["NUM_STEPS"]
+            # (env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key), (traj, finished_return) = jax.lax.scan(
+            #     _env_step, (env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key), None, length=config["NUM_STEPS"]
+            # )
+
+            init_nominal_traj, init_nominal_cntrl = init_nominal_trajectories(env_state.state, key)
+            carry_init = (env_state, obs, ep_return, disc_return, init_nominal_traj, init_nominal_cntrl, obs_rms, ret_rms, key, 0)
+            final_carry, trajectories = jax.lax.scan(
+                _env_step, carry_init, 
+                None, length=config["NUM_STEPS"]
             )
+
+
+
+            env_state_final, obs, ep_return, discounted_return, nominal_traj, nominal_cntrl, obs_rms, ret_rms, key, step_idx = final_carry
+            traj, finished_return = trajectories
 
 
             # CALCULATE ADVANTAGE
@@ -635,7 +669,7 @@ def make_train(config, env: SpacecraftEnvJax):
             # _, last_val = network.apply(train_state.params, last_obs)
             obs_norm = normalize_obs(obs, obs_rms)
             # last_val = jax.vmap(model.value)(obs)
-            last_val = jax.vmap(model.value)(obs_norm)
+            last_val = jax.vmap(controller.value)(obs_norm)
             advantages, targets = calculate_gae(traj, last_val)
 
 
@@ -644,8 +678,8 @@ def make_train(config, env: SpacecraftEnvJax):
             # UPDATE NETWORK
             def _update_epoch(update_state, unused):
 
-                # Consider carry only containing model, opt state and a key
-                model, opt_state, key = update_state
+                # Consider carry only containing controller, opt state and a key
+                controller, opt_state, key = update_state
 
                 key, subkey = jax.random.split(key)
 
@@ -674,23 +708,29 @@ def make_train(config, env: SpacecraftEnvJax):
                     # traj_batch, advantages, targets = batch_info
 
 
-                    model, opt_state = carry
+                    # model, opt_state = carry
+                    controller, opt_state = carry
                     traj_batch, advantages, targets = output
 
                     # Get loss and grads
 
-                    old_log_std = model.log_std.copy()
+                    # old_log_std = model.log_std.copy()
+                    old_log_std = controller.log_std.copy()
 
-                    (loss, aux), grads = grad_fn(model, traj_batch, advantages, targets)
+                    (loss, aux), grads = grad_fn(controller, traj_batch, advantages, targets)
+                    network_grad = grads.network
 
                     # # Check grads for log_std, it _should_ be getting updated
                     # jax.debug.print("log_std grad norm: {}", jnp.linalg.norm(grads.log_std))
 
                     # Update using optimizer
-                    updates, opt_state = optimizer.update(grads, opt_state, eqx.filter(model, eqx.is_inexact_array))                    
+                    updates, opt_state = optimizer.update(network_grad, opt_state, eqx.filter(controller.network, eqx.is_inexact_array))                    
 
                     # Apply updates
-                    model = eqx.apply_updates(model, updates)
+                    new_network = eqx.apply_updates(controller.network, updates)
+                    controller = eqx.tree_at(lambda c: c.network, controller, new_network)
+
+
 
                     # DEBUG: log_std AFTER update
                     # jax.debug.print("log_std before: {} | after: {} | diff: {}", 
@@ -703,7 +743,7 @@ def make_train(config, env: SpacecraftEnvJax):
                     # train_state = train_state.apply_gradients(grads=grads)
                     
                     
-                    carry = (model, opt_state)
+                    carry = (controller, opt_state)
                     output = (loss, aux)
                     
                     return carry, output
@@ -716,12 +756,12 @@ def make_train(config, env: SpacecraftEnvJax):
 
                 
                 # Run the minibatch updates lax scan
-                (model, opt_state), (losses, aux) = jax.lax.scan(
-                    _update_minbatch, (model, opt_state), minibatches
+                (controller, opt_state), (losses, aux) = jax.lax.scan(
+                    _update_minbatch, (controller, opt_state), minibatches
                 )
 
                 # Update state
-                update_state = (model, opt_state, key)
+                update_state = (controller, opt_state, key)
                 outputs = (losses, aux)
                 
                 return update_state, outputs
@@ -741,7 +781,7 @@ def make_train(config, env: SpacecraftEnvJax):
 
 
             # Run update epochs lax scan
-            update_state = (model, opt_state, key)
+            update_state = (controller, opt_state, key)
             update_state, loss_info = jax.lax.scan(
                 _update_epoch, update_state, None, length=config["UPDATE_EPOCHS"]
             )
@@ -751,7 +791,7 @@ def make_train(config, env: SpacecraftEnvJax):
             value_loss, pg_loss, entropy, approx_kl = aux
 
             # Unpack model
-            model, opt_state, key = update_state
+            controller, opt_state, key = update_state
 
             total_loss = losses.mean()
             value_loss = value_loss.mean()
@@ -771,7 +811,7 @@ def make_train(config, env: SpacecraftEnvJax):
                 "pg_loss": pg_loss,
                 "entropy": entropy,
                 "approx_kl": approx_kl,
-                "action_std": jnp.exp(model.log_std).mean(),
+                "action_std": jnp.exp(controller.log_std).mean(),
 
             }
 
@@ -816,11 +856,14 @@ def make_train(config, env: SpacecraftEnvJax):
             # Update runner step for update_step iteration
 
             # runner_state = (model, opt_state, env_state, obs, ep_return, disc_return, rstat, key)
-            runner_state = (model, opt_state, env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key)
+
+            carry_top = (controller, opt_state, env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key)
+
+            # runner_state = (controller, opt_state, env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key)
             
             
             # Return EVERYTHING
-            return runner_state, metrics
+            return carry_top, metrics
 
         
 
@@ -832,7 +875,10 @@ def make_train(config, env: SpacecraftEnvJax):
 
         # Run update steps lax scan
         # carry_top = (model, opt_state, env_state, obs, ep_return, disc_return, running_stat, key)
-        carry_top = (model, opt_state, env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key)
+        key, subkey = jax.random.split(key)
+        carry_top = (controller, opt_state, env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key)
+
+
         carry_top, metric = jax.lax.scan(
             _update_step, carry_top, jnp.arange(config["NUM_UPDATES"]), length=config["NUM_UPDATES"]
         )   
@@ -909,7 +955,7 @@ if __name__ == "__main__":
         "MPC_HORIZON": hyperparams.mpc_horizon,
         "OUTPUT_ACTIVATION": hyperparams.output_activation,
         "NETWORK_EPSILON": hyperparams.network_epsilon,
-        "DECOMPOSITION_TYPE": hyperparams.qr_output_horizon,
+        "DECOMPOSITION_TYPE": hyperparams.decomposition_type,
         "QR_OUTPUT_HORIZON": hyperparams.qr_output_horizon,
         "MPC_HORIZON": hyperparams.mpc_horizon,
         "REPLAN_FREQUENCY": hyperparams.replan_frequency,

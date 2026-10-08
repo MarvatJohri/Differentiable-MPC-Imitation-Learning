@@ -506,9 +506,11 @@ class DiffMPCController(eqx.Module):
         # Obs is error b/w current state and x_goal
         # Can use it to get current state
 
+        # obs contains q_err and omega_err
         # q_err = qg* x q
         # Thus q = qg x q_err
         # omega_err = omega - omega_goal
+        # Thus omega = omega_err + omega_goal
 
         quat = q_mul(x_goal[:4],obs[:4])
         omega = obs[4:7] + x_goal[4:7]
