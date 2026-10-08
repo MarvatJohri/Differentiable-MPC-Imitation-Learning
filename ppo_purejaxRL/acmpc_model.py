@@ -315,9 +315,6 @@ class DiffMPCController(eqx.Module):
         # Build solver once
         self.solver, self.solver_params = build_mpc_solver(self.mpc_horizon, self.nx - 1, self.nu)
 
-        # Store vals of Q, R for debugging
-        self.Q = None
-        self.R = None
 
 
 
@@ -492,7 +489,7 @@ class DiffMPCController(eqx.Module):
         u_nominal = jnp.asarray(u_nominal, dtype=jnp.float64)
 
         theta = self.network(obs)
-        self.Q, self.R = network_output_to_QR(theta, self.nx - 1, self.nu, self.network.decomposition_type, self.qr_output_horizon)
+        Q, R = network_output_to_QR(theta, self.nx - 1, self.nu, self.network.decomposition_type, self.qr_output_horizon)
         # Make prints for debugging 
         # jax.debug.print("Q : {}", Q)
         # jax.debug.print("R : {}", R)
@@ -527,7 +524,7 @@ class DiffMPCController(eqx.Module):
         # jax.debug.print("nom_traj quat norms: {}", jnp.linalg.norm(x_nominal[:, :4], axis=1))
 
         # Form Optimal Control Problem
-        P_data, A_data, q, b = self.form_ocp_moreau(dx0, dxgoal, x_nominal, u_nominal, self.Q, self.R)
+        P_data, A_data, q, b = self.form_ocp_moreau(dx0, dxgoal, x_nominal, u_nominal, Q, R)
 
         # jax.debug.print("A_data NaN: {}, has inf: {}", jnp.isnan(A_data).any(), jnp.isinf(A_data).any())
         # jax.debug.print("P_data range: [{}, {}]", P_data.min(), P_data.max())
@@ -603,6 +600,15 @@ class ActorCriticMPC(eqx.Module):
     def value(self, obs):
         return self.critic(obs)[0]
 
+
+
+def save_network(model: ActorCriticMPC, checkpoint_file: str):
+    eqx.tree_serialise_leaves(checkpoint_file, model)
+
+def load_network(model: ActorCriticMPC, checkpoint_file: str):
+    # Load model parameters using Equinox's deserialization
+    model = eqx.tree_deserialise_leaves(checkpoint_file, model)
+    return model
 
 
 
