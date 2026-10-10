@@ -45,7 +45,7 @@ class ExpConfig:
 
     dagger_base_save_path: str = DAGGER_BASE_SAVE_PATH
 
-    ppo_experiment_name: str = "spacecraft_ppo_purejax_exp1"
+    ppo_experiment_name: str = "spacecraft_ppo_purejax_separate_optimizers"
     ppo_experiment_notes: str = "Initial PPO training on Earth orbit"
 
     acmpc_experiment_name: str = "spacecraft_acmpc_purejax_epx1"
@@ -131,6 +131,8 @@ class PPOHyperparameters:
     policy_type: str = 'MlpPolicy'
     net_arch: list = field(default_factory=lambda: NET_ARCH)
     learning_rate: float = 1e-3
+    actor_learning_rate: float = 3e-4
+    critic_learning_rate: float = 1e-3
     learning_rate_schedule: str = 'constant'
     learning_rate_final: float = 1e-5
     n_rollouts: int = 3
@@ -159,6 +161,8 @@ class ACMPCHyperparameters:
     policy_type: str = 'MlpMPCPolicy'
     net_arch: list = field(default_factory=lambda: NET_ARCH)
     learning_rate: float = 1e-3
+    actor_learning_rate: float = 3e-4
+    critic_learning_rate: float = 3e-4
     learning_rate_schedule: str = 'constant'
     learning_rate_final: float = 1e-5
     n_rollouts: int = 3
@@ -171,7 +175,7 @@ class ACMPCHyperparameters:
     gae_lambda: float = 0.95
     clip_range: float = 0.2
     ent_coef: float = 1e-2
-    log_std_init: float = 0.0
+    log_std_init: float = -2.0
     vf_coef: float = 0.5
     clip_val_loss: bool = False
     vf_clip_eps: float = 0.2

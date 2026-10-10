@@ -408,11 +408,37 @@ def make_train(config, env: SpacecraftEnvJax):
         print("log_std in filtered model:", hasattr(filtered, 'log_std'), type(getattr(filtered, 'log_std', None)))
 
 
-        optimizer = optax.chain(
-            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-            optax.adam(learning_rate=lr, eps=1e-5),
+        params = eqx.filter(model, eqx.is_inexact_array)
+        # Label as actor/critic
+        labels = jax.tree_util.tree_map(lambda _: "critic", params)
+        labels = eqx.tree_at(
+            lambda p: (p.actor, p.log_std),
+            labels,
+            replace=(
+                jax.tree_util.tree_map(lambda _: "actor", params.actor),
+                "actor",
+            ),
         )
-        opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+
+        # optimizer = optax.chain(
+        #     optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+        #     optax.adam(learning_rate=lr, eps=1e-5),
+        # )
+        optimizer = optax.multi_transform(
+            {
+                "actor": optax.chain(
+                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+                    optax.adam(learning_rate=config["ACTOR_LEARNING_RATE"], eps=1e-5),
+                ),
+                "critic": optax.chain(
+                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+                    optax.adam(learning_rate=config["CRITIC_LEARNING_RATE"], eps=1e-5),
+                ),
+            },
+            labels,   
+        )
+        opt_state = optimizer.init(params)
+
 
         # INIT ENV
         # rng, _rng = jax.random.split(rng)
@@ -793,6 +819,8 @@ if __name__ == "__main__":
 
     config = {
         "LEARNING_RATE": hyperparams.learning_rate,
+        "ACTOR_LR": hyperparams.actor_learning_rate,
+        "CRITIC_LR": hyperparams.critic_learning_rate,
         "NET_ARCH": hyperparams.net_arch,
         "LEARNING_RATE_SCHEDULE": hyperparams.learning_rate_schedule,
         "LEARNING_RATE_FINAL": hyperparams.learning_rate_final,

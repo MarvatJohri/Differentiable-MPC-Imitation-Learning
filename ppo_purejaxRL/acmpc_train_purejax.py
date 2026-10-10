@@ -342,6 +342,8 @@ def make_train(config, env: SpacecraftEnvJax):
 
     def loss_fn(model: ActorCriticMPC, batch: Transition, gae, targets):
         mean, _, __ = jax.vmap(model.mean)(batch.obs, batch.x_goal, batch.x_nominal, batch.u_nominal)
+        # normalize mean to -1,1 instead of -max_torque, max_torque for sampling purpose
+        mean = mean / env.max_torque
         value = jax.vmap(model.value)(batch.obs)
         log_prob = gaussian_log_prob(mean, model.log_std, batch.action)
 
@@ -458,6 +460,7 @@ def make_train(config, env: SpacecraftEnvJax):
             mean_action, new_traj, new_cntrl = jax.vmap(model.mean)(
                 obs, goal_state, nominal_traj, nominal_cntrl
             )
+            # jax.debug.print("Mean action: {}", mean_action)
             return mean_action, new_traj, new_cntrl
         
         def no_replan(args):
@@ -476,6 +479,10 @@ def make_train(config, env: SpacecraftEnvJax):
             no_replan,
             operand=(obs, goal_state, nominal_traj, nominal_cntrl, key)
         )
+
+        # Normalize mean action to -1,1 instead of -max_torque, max_torque for sampling purpose
+        mean_action = mean_action / env.max_torque
+        # jax.debug.print("Mean action (normalized): {}", mean_action)
         
         # Get value estimates (always computed, independent of replan)
         value = jax.vmap(model.value)(obs)
@@ -486,6 +493,10 @@ def make_train(config, env: SpacecraftEnvJax):
         
         # Compute log probability
         log_prob = gaussian_log_prob(mean_action, model.log_std, action)
+
+        # Normalize action to be within control limits
+        # jax.debug.print("Action before clipping: {}", action)
+        # action = action/env.max_torque
         
         return action, log_prob, value, new_nominal_traj, new_nominal_cntrl
     
@@ -499,14 +510,49 @@ def make_train(config, env: SpacecraftEnvJax):
         # )
 
 
+        
+
+        
 
 
-        optimizer = optax.chain(
-            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-            optax.adam(learning_rate=lr, eps=1e-5),
+        # optimizer = optax.chain(
+        #     optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+        #     optax.adam(learning_rate=lr, eps=1e-5),
+        # )
+        # # opt_state = optimizer.init(eqx.filter(controller.network, eqx.is_inexact_array))
+        # opt_state = optimizer.init(eqx.filter(controller, eqx.is_inexact_array))
+
+
+        params = eqx.filter(controller, eqx.is_inexact_array)
+        # Label as actor/critic
+        labels = jax.tree_util.tree_map(lambda _: "critic", params)
+        labels = eqx.tree_at(
+            lambda p: (p.actor, p.log_std),
+            labels,
+            replace=(
+                jax.tree_util.tree_map(lambda _: "actor", params.actor),
+                "actor",
+            ),
         )
-        # opt_state = optimizer.init(eqx.filter(controller.network, eqx.is_inexact_array))
-        opt_state = optimizer.init(eqx.filter(controller, eqx.is_inexact_array))
+
+        # optimizer = optax.chain(
+        #     optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+        #     optax.adam(learning_rate=lr, eps=1e-5),
+        # )
+        optimizer = optax.multi_transform(
+            {
+                "actor": optax.chain(
+                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+                    optax.adam(learning_rate=config["ACTOR_LEARNING_RATE"], eps=1e-5),
+                ),
+                "critic": optax.chain(
+                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+                    optax.adam(learning_rate=config["CRITIC_LEARNING_RATE"], eps=1e-5),
+                ),
+            },
+            labels,   
+        )
+        opt_state = optimizer.init(params)
 
         # INIT ENV
         # rng, _rng = jax.random.split(rng)
@@ -617,7 +663,7 @@ def make_train(config, env: SpacecraftEnvJax):
                 # )
 
                 transition_mpc = Transition(
-                    done, action, value, reward, log_prob, obs, env_states.goal_state, new_nominal_traj, new_nominal_cntrl
+                    done, action, value, reward, log_prob, obs, env_states.goal_state, nominal_traj, nominal_cntrl
                 )
 
 
@@ -705,7 +751,7 @@ def make_train(config, env: SpacecraftEnvJax):
                     # Get loss and grads
 
                     # old_log_std = model.log_std.copy()
-                    old_log_std = controller.log_std.copy()
+                    # old_log_std = controller.log_std.copy()
 
                     (loss, aux), grads = grad_fn(controller, traj_batch, advantages, targets)
 
@@ -713,7 +759,9 @@ def make_train(config, env: SpacecraftEnvJax):
                     trainable_params = eqx.filter(controller, eqx.is_inexact_array)
 
                     # # Check grads for log_std, it _should_ be getting updated
-                    # jax.debug.print("log_std grad norm: {}", jnp.linalg.norm(grads.log_std))
+                    # actor_grad_norm = optax.global_norm(eqx.filter(grads.actor, eqx.is_inexact_array))
+                    # jax.debug.print("log_std grad norm: {} | actor grad norm: {}",
+                    #     jnp.linalg.norm(grads.log_std), actor_grad_norm)
 
                     # Update using optimizer
                     # updates, opt_state = optimizer.update(network_grad, opt_state, eqx.filter(controller.network, eqx.is_inexact_array))                    
@@ -944,6 +992,8 @@ if __name__ == "__main__":
 
     config = {
         "LEARNING_RATE": hyperparams.learning_rate,
+        "ACTOR_LEARNING_RATE": hyperparams.actor_learning_rate,
+        "CRITIC_LEARNING_RATE": hyperparams.critic_learning_rate,
         "NET_ARCH": hyperparams.net_arch,
         "LEARNING_RATE_SCHEDULE": hyperparams.learning_rate_schedule,
         "LEARNING_RATE_FINAL": hyperparams.learning_rate_final,
