@@ -150,7 +150,7 @@ def save_controller(controller: DiffMPCController, checkpoint_file: str):
 
 
 
-def compute_metrics(trajectories: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray], 
+def compute_metrics(trajectories, 
                     dt=DT, 
                     angle_threshold=THETA_THRESHOLD,
                     omega_threshold=OMEGA_THRESHOLD,
@@ -165,7 +165,8 @@ def compute_metrics(trajectories: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, j
     # os.makedirs(save_dir, exist_ok=True)
 
     # obs/actions are of form (n_trajs, T, dim)
-    observations, _, __, ___, ____ = trajectories
+    # observations, _, __, ___, ____ = trajectories
+    observations = trajectories[0]
 
     n_trajs = observations.shape[0]
     T = observations.shape[1]

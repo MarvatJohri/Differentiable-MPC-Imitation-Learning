@@ -611,5 +611,10 @@ def load_network(model: ActorCriticMPC, checkpoint_file: str):
     return model
 
 
+def get_acmpc_policy(model: ActorCriticMPC):
 
+    def policy(obs: jnp.ndarray, x_goal, x_nominal, u_nominal):
+        return model.mean(obs, x_goal, x_nominal, u_nominal)
+
+    return policy
 

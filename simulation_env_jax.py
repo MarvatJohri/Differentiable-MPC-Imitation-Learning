@@ -607,7 +607,7 @@ def rollout_controller(env: SpacecraftEnvJax,
         action = action / max_torque
 
         # Extract Q, R from controller for debugging
-        Q, R = controller.Q, controller.R
+        # Q, R = controller.Q, controller.R
 
 
         # Run executed action on the environment using the step key inside the env_state
@@ -615,7 +615,8 @@ def rollout_controller(env: SpacecraftEnvJax,
 
         new_carry = (new_env_state, new_obs, i+1, new_nominal_traj, new_nominal_cntrl, key)
 
-        outputs = (obs, action*max_torque, Q, R)
+        # outputs = (obs, action*max_torque, Q, R)
+        outputs = (obs, action*max_torque)
 
         return new_carry, outputs
             
@@ -638,14 +639,16 @@ def rollout_controller(env: SpacecraftEnvJax,
     final_carry, outputs = jax.lax.scan(scan_step, init_carry, xs=None, length=max_ep_steps)
 
     final_env_state, final_obs, final_i, final_nominal_traj, final_nominal_cntrl, final_key = final_carry
-    observations, actions, Q_list, R_list = outputs
+    # observations, actions, Q_list, R_list = outputs
+    observations, actions = outputs
 
     observations = jnp.concatenate([observations, final_obs[None, :]], axis=0)
 
-    nominal_trajs = jnp.concatenate([nominal_trajs, final_nominal_traj[None, :]], axis=0)
-    nominal_cntrls = jnp.concatenate([nominal_cntrls, final_nominal_cntrl[None, :]], axis=0)
+    # nominal_trajs = jnp.concatenate([nominal_trajs, final_nominal_traj[None, :]], axis=0)
+    # nominal_cntrls = jnp.concatenate([nominal_cntrls, final_nominal_cntrl[None, :]], axis=0)
 
-    trajectory = (observations, init_env_state.goal_state, actions, Q_list, R_list)
+    # trajectory = (observations, init_env_state.goal_state, actions, Q_list, R_list)
+    trajectory = (observations, init_env_state.goal_state, actions)
 
     return trajectory, final_key
 

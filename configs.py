@@ -134,7 +134,11 @@ class PPOHyperparameters:
     actor_learning_rate: float = 3e-4
     critic_learning_rate: float = 1e-3
     learning_rate_schedule: str = 'constant'
+    actor_learning_rate_schedule: str = 'constant'
+    critic_learning_rate_schedule: str = 'constant'
     learning_rate_final: float = 1e-5
+    actor_learning_rate_final: float = 1e-5
+    critic_learning_rate_final: float = 1e-5
     n_rollouts: int = 3
     n_envs: int = 3
     n_steps: int = 1500
@@ -162,9 +166,13 @@ class ACMPCHyperparameters:
     net_arch: list = field(default_factory=lambda: NET_ARCH)
     learning_rate: float = 1e-3
     actor_learning_rate: float = 3e-4
-    critic_learning_rate: float = 3e-4
+    critic_learning_rate: float = 1e-3
     learning_rate_schedule: str = 'constant'
+    actor_learning_rate_schedule: str = 'constant'
+    critic_learning_rate_schedule: str = 'constant'
     learning_rate_final: float = 1e-5
+    actor_learning_rate_final: float = 1e-5
+    critic_learning_rate_final: float = 1e-5
     n_rollouts: int = 3
     n_envs: int = 3
     n_steps: int = 1500

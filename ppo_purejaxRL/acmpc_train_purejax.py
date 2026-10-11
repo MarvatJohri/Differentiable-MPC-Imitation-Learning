@@ -303,13 +303,21 @@ def make_train(config, env: SpacecraftEnvJax):
         resume_grad_steps = 0
 
 
-    lr = lr_scheduler(
-        start_lr=config["LEARNING_RATE"],
-        schedule_type=config["LEARNING_RATE_SCHEDULE"],
-        end_lr=config["LEARNING_RATE_FINAL"],
+    actor_lr = lr_scheduler(
+        start_lr=config["ACTOR_LEARNING_RATE"],
+        schedule_type=config["ACTOR_LEARNING_RATE_SCHEDULE"],
+        end_lr=config["ACTOR_LEARNING_RATE_FINAL"],
         total_grad_steps=total_grad_steps,
         resume_grad_steps=resume_grad_steps
       )
+
+    critic_lr = lr_scheduler(
+        start_lr=config["CRITIC_LEARNING_RATE"],
+        schedule_type=config["CRTIIC_LEARNING_RATE_SCHEDULE"],
+        end_lr=config["CRITIC_LEARNING_RATE_FINAL"],
+        total_grad_steps=total_grad_steps,
+        resume_grad_steps=resume_grad_steps
+        )
 
     obs_dim = config["OBS_DIM"]
     act_dim = config["ACT_DIM"]
@@ -543,11 +551,11 @@ def make_train(config, env: SpacecraftEnvJax):
             {
                 "actor": optax.chain(
                     optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                    optax.adam(learning_rate=config["ACTOR_LEARNING_RATE"], eps=1e-5),
+                    optax.adam(learning_rate=actor_lr, eps=1e-5),
                 ),
                 "critic": optax.chain(
                     optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                    optax.adam(learning_rate=config["CRITIC_LEARNING_RATE"], eps=1e-5),
+                    optax.adam(learning_rate=critic_lr, eps=1e-5),
                 ),
             },
             labels,   
@@ -610,6 +618,33 @@ def make_train(config, env: SpacecraftEnvJax):
 
                 # env manages rng internally so don't need to pass subkey again
                 env_states, next_obs, raw_reward, done, info = v_step(env_states, action)
+                # large_reward_threshold = 50.0  # choose based on your reward design
+                # large_reward_mask = jnp.abs(raw_reward) > large_reward_threshold
+
+                # def print_large_reward(_):
+                #     jax.debug.print(
+                #         "LARGE REWARD at rollout step={}\n"
+                #         "  raw_reward={}\n"
+                #         "  mask={}\n"
+                #         "  done={}\n"
+                #         "  action={}\n"
+                #         "  obs={}\n"
+                #         "  goal={}\n",
+                #         step_idx,
+                #         raw_reward,
+                #         large_reward_mask,
+                #         done,
+                #         action,
+                #         obs,
+                #         env_states.goal_state,
+                #     )
+
+                # jax.lax.cond(
+                #     jnp.any(large_reward_mask),
+                #     print_large_reward,
+                #     lambda _: None,
+                #     operand=None,
+                # )
                 not_done = 1.0 - done.astype(value.dtype)
 
                 ep_return = ep_return + raw_reward
@@ -996,7 +1031,11 @@ if __name__ == "__main__":
         "CRITIC_LEARNING_RATE": hyperparams.critic_learning_rate,
         "NET_ARCH": hyperparams.net_arch,
         "LEARNING_RATE_SCHEDULE": hyperparams.learning_rate_schedule,
+        "ACTOR_LEARNING_RATE_SCHEDULE": hyperparams.actor_learning_rate_schedule,
+        "CRITIC_LEARNING_RATE_SCHEDULE": hyperparams.critic_learning_rate_schedule,
         "LEARNING_RATE_FINAL": hyperparams.learning_rate_final,
+        "ACTOR_LEARNING_RATE_FINAL": hyperparams.actor_learning_rate_final,
+        "CRITIC_LEARNING_RATE_FINAL": hyperparams.critic_learning_rate_final,
         "NUM_ENVS": hyperparams.n_envs,
         "NUM_STEPS": hyperparams.n_steps,
         "MPC_HORIZON": hyperparams.mpc_horizon,
