@@ -214,7 +214,7 @@ def load_train_state(opt_state: optax.OptState,
     
     train_state_checkpoint = {
         "opt_state": opt_state,
-        "obs_rms": obs_rms,
+        "obs_stat": obs_rms,
         "ret_rms": ret_rms,
         "key": jax.random.PRNGKey(0),  # Placeholder, will be replaced
         "iteration": 0,  # Placeholder, will be replaced
@@ -222,7 +222,7 @@ def load_train_state(opt_state: optax.OptState,
 
     train_state = eqx.tree_deserialise_leaves(train_state_file, train_state_checkpoint)
     opt_state = train_state["opt_state"]
-    obs_rms = train_state["obs_rms"]
+    obs_rms = train_state["obs_stat"]
     ret_rms = train_state["ret_rms"]
     key = train_state["key"]
     iteration = train_state["iteration"]
@@ -819,8 +819,8 @@ if __name__ == "__main__":
 
     config = {
         "LEARNING_RATE": hyperparams.learning_rate,
-        "ACTOR_LR": hyperparams.actor_learning_rate,
-        "CRITIC_LR": hyperparams.critic_learning_rate,
+        "ACTOR_LEARNING_RATE": hyperparams.actor_learning_rate,
+        "CRITIC_LEARNING_RATE": hyperparams.critic_learning_rate,
         "NET_ARCH": hyperparams.net_arch,
         "LEARNING_RATE_SCHEDULE": hyperparams.learning_rate_schedule,
         "LEARNING_RATE_FINAL": hyperparams.learning_rate_final,

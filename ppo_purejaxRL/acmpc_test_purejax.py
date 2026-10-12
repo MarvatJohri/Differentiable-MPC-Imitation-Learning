@@ -20,6 +20,7 @@ sys.path.append(str(MJ_WORK))
 
 import equinox as eqx
 from simulation_env_jax import SpacecraftEnvJax
+# from simulation_env_jax_test1 import SpacecraftEnvJax
 from configs import ExpConfig, SpacecraftEnvConfig, ACMPCHyperparameters
 from mj_utils import make_dummy_controller, compute_metrics, print_metrics
 
@@ -198,6 +199,23 @@ def main():
                             action_penalty=ACTION_PENALTY,
                             goal_reward=GOAL_REWARD)
 
+    # env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMETERS,
+    #                         dt=DT,
+    #                         max_ep_steps=MAX_EP_STEPS,
+    #                         state_limits=STATE_LIMITS,
+    #                         control_limits=CONTROL_LIMITS,
+    #                         max_torque=MAX_TORQUE,
+    #                         dyn_noise_std=DYN_NOISE_STD,
+    #                         theta_threshold=THETA_THRESHOLD,
+    #                         omega_threshold=OMEGA_THRESHOLD,
+    #                         theta_threshold_reward=THETA_THRESHOLD_REWARD,
+    #                         omega_penalty=OMEGA_PENALTY,
+    #                         omega_fail_penalty=OMEGA_FAIL_PENALTY,
+    #                         action_penalty=ACTION_PENALTY,
+    #                         goal_reward=5,
+    #                         stability_reward=20)
+
+
 
     config = {
         "LEARNING_RATE": hyperparams.learning_rate,
@@ -267,21 +285,6 @@ def main():
     # Get policy function
     acmpc_policy = get_acmpc_policy(model)
 
-    # Load env
-    env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMETERS,
-                            dt=DT,
-                            max_ep_steps=MAX_EP_STEPS,
-                            state_limits=STATE_LIMITS,
-                            control_limits=CONTROL_LIMITS,
-                            max_torque=MAX_TORQUE,
-                            dyn_noise_std=DYN_NOISE_STD,
-                            theta_threshold=THETA_THRESHOLD,
-                            omega_threshold=OMEGA_THRESHOLD,
-                            theta_threshold_reward=THETA_THRESHOLD_REWARD,
-                            omega_penalty=OMEGA_PENALTY,
-                            omega_fail_penalty=OMEGA_FAIL_PENALTY,
-                            action_penalty=ACTION_PENALTY,
-                            goal_reward=GOAL_REWARD)
 
     # Generate trajectories using the loaded model
     trajectories, keys = n_rollouts_controller(env,
@@ -291,16 +294,16 @@ def main():
                                                n_rollouts=100,
                                                replan_freq=1)
     print("Calculated trajectories")
-    rewards = trajectories[-1]
-    returns = rewards.sum(axis=1)
+    # rewards = trajectories[-1]
+    # returns = rewards.sum(axis=1)
 
-    print("returns per rollout:", returns)
-    print("mean return:", returns.mean())
-    print("median return:", jnp.median(returns))
-    print("min/max:", returns.min(), returns.max())
+    # print("returns per rollout:", returns)
+    # print("mean return:", returns.mean())
+    # print("median return:", jnp.median(returns))
+    # print("min/max:", returns.min(), returns.max())
 
-    large_positive_counts = (rewards > 20.0).sum(axis=1)
-    print("large positive events per rollout:", large_positive_counts)
+    # large_positive_counts = (rewards > 20.0).sum(axis=1)
+    # print("large positive events per rollout:", large_positive_counts)
     metrics = compute_metrics(trajectories)
     print_metrics(metrics)
 

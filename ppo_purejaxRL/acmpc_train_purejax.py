@@ -39,7 +39,8 @@ sys.path.append(str(MJ_WORK))
 
 
 import equinox as eqx
-from simulation_env_jax import SpacecraftEnvJax, generate_n_trajectories
+from simulation_env_jax import SpacecraftEnvJax
+# from simulation_env_jax_test1 import SpacecraftEnvJax
 from configs import ExpConfig, SpacecraftEnvConfig, ACMPCHyperparameters
 from mj_utils import make_dummy_controller
 
@@ -313,7 +314,7 @@ def make_train(config, env: SpacecraftEnvJax):
 
     critic_lr = lr_scheduler(
         start_lr=config["CRITIC_LEARNING_RATE"],
-        schedule_type=config["CRTIIC_LEARNING_RATE_SCHEDULE"],
+        schedule_type=config["CRITIC_LEARNING_RATE_SCHEDULE"],
         end_lr=config["CRITIC_LEARNING_RATE_FINAL"],
         total_grad_steps=total_grad_steps,
         resume_grad_steps=resume_grad_steps
@@ -1023,6 +1024,24 @@ if __name__ == "__main__":
                             omega_fail_penalty=OMEGA_FAIL_PENALTY,
                             action_penalty=ACTION_PENALTY,
                             goal_reward=GOAL_REWARD)
+
+
+    # env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMETERS,
+    #                         dt=DT,
+    #                         max_ep_steps=MAX_EP_STEPS,
+    #                         state_limits=STATE_LIMITS,
+    #                         control_limits=CONTROL_LIMITS,
+    #                         max_torque=MAX_TORQUE,
+    #                         dyn_noise_std=DYN_NOISE_STD,
+    #                         theta_threshold=THETA_THRESHOLD,
+    #                         omega_threshold=OMEGA_THRESHOLD,
+    #                         theta_threshold_reward=THETA_THRESHOLD_REWARD,
+    #                         omega_penalty=OMEGA_PENALTY,
+    #                         omega_fail_penalty=OMEGA_FAIL_PENALTY,
+    #                         action_penalty=ACTION_PENALTY,
+    #                         goal_reward=5,
+    #                         stability_reward=20)
+
 
 
     config = {

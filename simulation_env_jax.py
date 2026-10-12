@@ -325,7 +325,7 @@ class SpacecraftEnvJax(eqx.Module):
      
         
         # Reward reaching threshold
-        reward = reward + jnp.where(~not_reached_goal, self.theta_threshold_reward, 0.0)
+        # reward = reward + jnp.where(~not_reached_goal, self.theta_threshold_reward, 0.0)
 
         # Reward reaching goal
         reward = reward + jnp.where(~not_reached_goal & (omega_error_norm < self.omega_threshold), self.goal_reward, 0.0)

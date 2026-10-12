@@ -23,7 +23,7 @@ controller_config = ControllerConfig()
 
 DYNAMICS_PARAMS = env_config.spacecraft_dynamics_parameters
 MAX_TORQUE = env_config.max_torque
-CONTROL_LIMITS = env_config.control_limits
+CONTROL_LIMITS = env_config.control_limits_torque
 STATE_LIMITS_MRP = env_config.state_limits_mrp
 DT = env_config.dt
 
