@@ -55,7 +55,7 @@ PPO_BASE_LOG_PATH = str(HERE / "ppo_logs")
 
 from simulation_env_simpler import SpacecraftEnv
 from simulation_env_jax import SpacecraftEnvJax, generate_n_trajectories
-from mj_utils import make_dummy_controller, compute_metrics, print_metrics, get_expert_policy
+from mj_utils import make_dummy_controller, compute_metrics, print_metrics, get_sbx_policy
 
 from configs import ExpConfig, SpacecraftEnvConfig, PPOHyperparameters
 
@@ -238,7 +238,7 @@ def evaluate(vec_env: VecNormalize,
 
     dummy_controller = make_dummy_controller(state_dim=7, action_dim=3)
 
-    rl_policy = get_expert_policy(rl_model, vec_env)
+    rl_policy = get_sbx_policy(rl_model, vec_env)
 
     # Make env
     env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMETERS,

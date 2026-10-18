@@ -25,8 +25,7 @@ jax.config.update("jax_enable_x64", True)
 jax.devices()
 
 
-from quaternion_functions import q_left, q_conj, q_mul, skew, quaternion_projection, quaternion_jacobian
-from mj_utils import sample_state
+from quaternion_functions import q_left, q_conj, q_mul, skew, quaternion_projection
 from diffmpc_controller import DiffMPCController
 
 
@@ -130,12 +129,39 @@ class SpacecraftEnvJax(eqx.Module):
         self.max_omega_norm = jnp.linalg.norm(self.state_limits[4:, 1])
         self.max_action_norm = jnp.linalg.norm(self.control_limits[:, 1])
 
+    def _sample_state(self, batch_size, key, omega_min=0.0, omega_max=0.0):
+
+        """
+        Samples a batch of random states for the spacecraft environment.
+
+        Args:
+            batch_size: Number of states to sample.
+            key: JAX key.
+            omega_min: Minimum angular velocity (rad/s).
+            omega_max: Maximum angular velocity (rad/s).
+        """
+
+        # Sample omega uniformly
+        key, subkey = jax.random.split(key)
+        omega = jax.random.uniform(subkey, 
+                                shape=(batch_size, 3), 
+                                minval=omega_min, 
+                                maxval=omega_max, 
+                                dtype=jnp.float64)
+
+        # Sample quaternion
+        key, subkey = jax.random.split(key)
+        q = jax.random.normal(subkey, shape=(batch_size, 4), dtype=jnp.float64)
+        q = q / jnp.linalg.norm(q, axis=-1, keepdims=True)
+
+        return jnp.concatenate([q, omega], axis=-1)
+
     def _sample_episode_context(self, key: jax.random.PRNGKey) -> Tuple[jnp.ndarray, jnp.ndarray]:
 
         init_key, target_key = jax.random.split(key)
 
-        target_state = sample_state(1, target_key)[0]
-        initial_state = sample_state(1, init_key)[0]
+        target_state = self._sample_state(1, target_key)[0]
+        initial_state = self._sample_state(1, init_key)[0]
 
         return initial_state, target_state
 

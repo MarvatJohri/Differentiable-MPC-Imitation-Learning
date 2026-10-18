@@ -39,10 +39,14 @@ class MLP(eqx.Module):
 class ActorCritic(eqx.Module):
     actor: MLP
     critic: MLP
-    log_std: jax.Array          
+    log_std: jax.Array       
+    obs_dim: int = eqx.field(static=True)
+    act_dim: int = eqx.field(static=True)
  
     def __init__(self, obs_dim, act_dim, layers, key, log_std_init=-0.5):
         actor_key, critic_key = jax.random.split(key)
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
         # Std PPO initialization: small init for actor, larger for critic
         self.actor = MLP(obs_dim, layers, actor_key, act_dim, 0.01)   # small init -> ~0 mean actions
         self.critic = MLP(obs_dim, layers, critic_key, 1, 1.0)
@@ -62,7 +66,7 @@ class ActorCritic(eqx.Module):
 
 
 
-def save_network(model: ActorCritic, checkpoint_file: str):
+def save_ppo_network(model: ActorCritic, checkpoint_file: str):
     # Save model parameters using Equinox's serialization
     network_checkpoint = {
         "model": eqx.filter(model, eqx.is_inexact_array),
@@ -72,7 +76,7 @@ def save_network(model: ActorCritic, checkpoint_file: str):
 
 
 
-def load_network(model: ActorCritic, checkpoint_file: str) -> ActorCritic:
+def load_ppo_network(model: ActorCritic, checkpoint_file: str) -> ActorCritic:
     if not os.path.exists(checkpoint_file):
         raise FileNotFoundError(f"Checkpoint file {checkpoint_file} does not exist.")
     

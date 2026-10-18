@@ -602,19 +602,16 @@ class ActorCriticMPC(eqx.Module):
 
 
 
-def save_network(model: ActorCriticMPC, checkpoint_file: str):
+def save_acmpc_network(model: ActorCriticMPC, checkpoint_file: str):
     eqx.tree_serialise_leaves(checkpoint_file, model)
 
-def load_network(model: ActorCriticMPC, checkpoint_file: str):
+def load_acmpc_network(model: ActorCriticMPC, checkpoint_file: str):
     # Load model parameters using Equinox's deserialization
     model = eqx.tree_deserialise_leaves(checkpoint_file, model)
     return model
 
 
-def get_acmpc_policy(model: ActorCriticMPC):
+def get_acmpc_controller(model: ActorCriticMPC):
 
-    def policy(obs: jnp.ndarray, x_goal, x_nominal, u_nominal):
-        return model.mean(obs, x_goal, x_nominal, u_nominal)
-
-    return policy
+    return model.actor
 

@@ -14,20 +14,20 @@ import os
 import sys
 from pathlib import Path
 
-from ppo_train_purejax import init_obs_rms, init_ret_rms, load_model, normalize_obs
+from ppo_train_purejax import init_obs_rms, init_ret_rms, load_model_state, normalize_obs
 
 HERE = Path(__file__).parent
 MJ_WORK = HERE.parent
 sys.path.append(str(MJ_WORK))
 
 import equinox as eqx
-from simulation_env_jax import SpacecraftEnvJax, generate_n_trajectories
+from simulation_env_jax import SpacecraftEnvJax, n_rollouts_policy
 from configs import ExpConfig, SpacecraftEnvConfig, PPOHyperparameters
 from mj_utils import make_dummy_controller, compute_metrics, print_metrics
 
 
 
-from ppo_model import ActorCritic, save_network, load_network
+from ppo_model import ActorCritic, save_ppo_network, load_network
 
 
 def get_policy(model: ActorCritic, obs_rms):
@@ -143,44 +143,12 @@ def main():
     os.makedirs(SAVE_PATH, exist_ok=True)
     os.makedirs(LOG_PATH, exist_ok=True)
     MODEL_SAVE_PATH = os.path.join(SAVE_PATH, "final_model.eqx")
+    MODEL_STATS_PATH = os.path.join(SAVE_PATH, "final_model_stats.eqx")
     print("loading model ", MODEL_SAVE_PATH)
-    # model = load_network(model, MODEL_SAVE_PATH)
-    # Dummy opt state
-    params = eqx.filter(model, eqx.is_inexact_array)
-    # Label as actor/critic
-    labels = jax.tree_util.tree_map(lambda _: "critic", params)
-    labels = eqx.tree_at(
-        lambda p: (p.actor, p.log_std),
-        labels,
-        replace=(
-            jax.tree_util.tree_map(lambda _: "actor", params.actor),
-            "actor",
-        ),
-    )
-    optimizer = optax.multi_transform(
-        {
-            "actor": optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(learning_rate=1e-3, eps=1e-5),
-            ),
-            "critic": optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(learning_rate=1e-3, eps=1e-5),
-            ),
-        },
-        labels,   
-    )
-    opt_state = optimizer.init(params)
-    # Dummy obs and return rms
-    obs_rms = init_obs_rms(NX)
-    ret_rms = init_ret_rms()
-    model, opt_state, obs_rms, ret_rms, key, iteration = load_model(
-        model, opt_state, obs_rms, ret_rms, SAVE_PATH, iteration=0, final=True
-    )
-
-
-    # Make dummy controller for testing
-    dummy_controller = make_dummy_controller(NX, NU)
+    
+    checkpoint_file = MODEL_SAVE_PATH
+    model_stats_file = MODEL_STATS_PATH
+    model, obs_rms, ret_rms = load_model_state(model, MODEL_SAVE_PATH, MODEL_STATS_PATH)
 
     # Get policy function
     ppo_policy = get_policy(model, obs_rms)
@@ -202,13 +170,11 @@ def main():
                             goal_reward=GOAL_REWARD)
 
     # Generate trajectories using the loaded model
-    trajectories, keys = generate_n_trajectories(env=env, 
-                                                 controller=dummy_controller,
-                                                 expert_policy=ppo_policy,
-                                                 key=key,
-                                                 beta=1.0,
-                                                 max_ep_steps=MAX_EP_STEPS,
-                                                 n_trajectories=100)
+    trajectories, keys = n_rollouts_policy(env=env, 
+                                           policy=ppo_policy,
+                                           key=key,
+                                           max_ep_steps=MAX_EP_STEPS,
+                                           n_rollouts=100)
 
     metrics = compute_metrics(trajectories)
     print_metrics(metrics)

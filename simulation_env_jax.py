@@ -26,8 +26,7 @@ jax.devices()
 
 
 from quaternion_functions import q_left, q_conj, q_mul, skew, quaternion_projection, quaternion_jacobian
-from mj_utils import sample_state
-from diffmpc_controller import DiffMPCController
+from diffmpc_controller import DiffMPCController, network_output_to_QR
 
 
 DYNAMICS_PARAMS = {
@@ -126,12 +125,42 @@ class SpacecraftEnvJax(eqx.Module):
         self.max_omega_norm = jnp.linalg.norm(self.state_limits[4:, 1])
         self.max_action_norm = jnp.linalg.norm(self.control_limits[:, 1])
 
+
+
+    def _sample_state(self, batch_size, key, omega_min=0.0, omega_max=0.0):
+
+        """
+        Samples a batch of random states for the spacecraft environment.
+
+        Args:
+            batch_size: Number of states to sample.
+            key: JAX key.
+            omega_min: Minimum angular velocity (rad/s).
+            omega_max: Maximum angular velocity (rad/s).
+        """
+
+        # Sample omega uniformly
+        key, subkey = jax.random.split(key)
+        omega = jax.random.uniform(subkey, 
+                                shape=(batch_size, 3), 
+                                minval=omega_min, 
+                                maxval=omega_max, 
+                                dtype=jnp.float64)
+
+        # Sample quaternion
+        key, subkey = jax.random.split(key)
+        q = jax.random.normal(subkey, shape=(batch_size, 4), dtype=jnp.float64)
+        q = q / jnp.linalg.norm(q, axis=-1, keepdims=True)
+
+        return jnp.concatenate([q, omega], axis=-1)
+    
+
     def _sample_episode_context(self, key: jax.random.PRNGKey) -> Tuple[jnp.ndarray, jnp.ndarray]:
 
         init_key, target_key = jax.random.split(key)
 
-        target_state = sample_state(1, target_key)[0]
-        initial_state = sample_state(1, init_key)[0]
+        target_state = self._sample_state(1, target_key)[0]
+        initial_state = self._sample_state(1, init_key)[0]
 
         return initial_state, target_state
 
@@ -579,7 +608,7 @@ def rollout_controller(env: SpacecraftEnvJax,
 
     def scan_step(carry, _):
 
-        env_state, obs, i, nominal_traj, nominal_cntrl, key = carry
+        env_state, obs, i, nominal_traj, nominal_cntrl, key, __, ___ = carry
 
 
         def controller_wrapper(operand):
@@ -607,16 +636,16 @@ def rollout_controller(env: SpacecraftEnvJax,
         action = action / max_torque
 
         # Extract Q, R from controller for debugging
-        # Q, R = controller.Q, controller.R
+        Q, R = network_output_to_QR(controller.network(obs))
 
 
         # Run executed action on the environment using the step key inside the env_state
         new_env_state, new_obs, reward, done, info = env.step(env_state, action)
 
-        new_carry = (new_env_state, new_obs, i+1, new_nominal_traj, new_nominal_cntrl, key)
+        new_carry = (new_env_state, new_obs, i+1, new_nominal_traj, new_nominal_cntrl, key, Q, R)
 
-        # outputs = (obs, action*max_torque, Q, R)
-        outputs = (obs, action*max_torque)
+        outputs = (obs, action*max_torque, Q, R)
+        # outputs = (obs, action*max_torque)
 
         return new_carry, outputs
             
@@ -638,21 +667,26 @@ def rollout_controller(env: SpacecraftEnvJax,
     # Do the for loop
     final_carry, outputs = jax.lax.scan(scan_step, init_carry, xs=None, length=max_ep_steps)
 
-    final_env_state, final_obs, final_i, final_nominal_traj, final_nominal_cntrl, final_key = final_carry
-    # observations, actions, Q_list, R_list = outputs
-    observations, actions = outputs
+    final_env_state, final_obs, final_i, final_nominal_traj, final_nominal_cntrl, final_key, final_Q, final_R = final_carry
+    observations, actions, Q_list, R_list = outputs
+    final_action = final_nominal_cntrl[0]
+    # observations, actions = outputs
 
     observations = jnp.concatenate([observations, final_obs[None, :]], axis=0)
+    actions = jnp.concatenate([actions, final_action[None, :]], axis=0)
+    Q_list = jnp.concatenate([Q_list, final_Q[None, :]], axis=0)
+    R_list = jnp.concatenate([R_list, final_R[None, :]], axis=0)
+    
 
     # nominal_trajs = jnp.concatenate([nominal_trajs, final_nominal_traj[None, :]], axis=0)
     # nominal_cntrls = jnp.concatenate([nominal_cntrls, final_nominal_cntrl[None, :]], axis=0)
 
     # trajectory = (observations, init_env_state.goal_state, actions, Q_list, R_list)
-    trajectory = (observations, init_env_state.goal_state, actions)
+    trajectory = (observations, init_env_state.goal_state, actions, Q_list, R_list)
 
     return trajectory, final_key
 
-
+@eqx.filter_jit
 def n_rollouts_controller(env: SpacecraftEnvJax,
                       controller: DiffMPCController,
                       key: jax.random.PRNGKey,
@@ -672,7 +706,11 @@ def n_rollouts_controller(env: SpacecraftEnvJax,
     return trajectories, key
 
 
-def rollout_policy():
+def rollout_policy(env: SpacecraftEnvJax, 
+                   policy: Callable, 
+                   key: jax.random.PRNGKey, 
+                   max_ep_steps: int,
+                   ):
 
 
     """
@@ -683,7 +721,63 @@ def rollout_policy():
     
     """
 
-    pass
+    max_torque = env.max_torque
+    
+    def scan_step(carry, _):
+
+        env_state, obs, i, key = carry
+
+        action = policy(obs)
+        key, subkey = jax.random.split(key)
+
+        # Run executed action on the environment using the step key inside the env_state
+        new_env_state, new_obs, reward, done, info = env.step(env_state, action)
+
+        new_carry = (new_env_state, new_obs, i+1, subkey)
+
+        outputs = (obs, action, reward, done, info)
+
+        return new_carry, outputs
+            
+
+
+    # Initialize stuff
+
+    # Env
+    key, subkey = jax.random.split(key)
+    init_env_state, init_obs, info = env.reset(subkey)
+
+    init_carry = (init_env_state, init_obs, 0, key)
+
+    # Do the for loop
+    final_carry, outputs = jax.lax.scan(scan_step, init_carry, xs=None, length=max_ep_steps)
+
+    final_env_state, final_obs, final_i, final_key = final_carry
+    observations, actions, rewards, dones, infos = outputs
+
+    observations = jnp.concatenate([observations, final_obs[None, :]], axis=0)
+    final_action = policy(final_obs)
+    actions = jnp.concatenate([actions, final_action[None, :]], axis=0)
+
+    trajectory = (observations, init_env_state.goal_state, actions)
+
+    return trajectory, final_key
+
+
+@eqx.filter_jit
+def n_rollouts_policy(env: SpacecraftEnvJax,
+                      policy: Callable,
+                      key: jax.random.PRNGKey,
+                      max_ep_steps: int,
+                      n_rollouts: int):
+
+    key, subkey = jax.random.split(key)
+    batched_keys = jax.random.split(subkey, n_rollouts)
+    trajectories, _ = jax.vmap(rollout_policy, in_axes=(None, None, 0, None))(env, 
+                                                                             policy, 
+                                                                             batched_keys, 
+                                                                             max_ep_steps)
+    return trajectories, key
 
 
     

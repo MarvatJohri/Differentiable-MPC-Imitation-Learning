@@ -18,6 +18,7 @@ ACMPC_BASE_SAVE_PATH = str(HERE / "acmpc_results")
 ACMPC_BASE_LOG_PATH = str(HERE / "acmpc_logs")
 
 DAGGER_BASE_SAVE_PATH = str(HERE / "dagger_results")
+DAGGER_BASE_LOG_PATH = str(HERE / "dagger_logs")
 
 SPACECRAFT_DYNAMICS_PARAMETERS = {
     "mass": 0.75,
@@ -44,6 +45,7 @@ class ExpConfig:
     acmpc_base_log_path: str = ACMPC_BASE_LOG_PATH
 
     dagger_base_save_path: str = DAGGER_BASE_SAVE_PATH
+    dagger_base_log_path: str = DAGGER_BASE_LOG_PATH
 
     ppo_experiment_name: str = "spacecraft_ppo_purejax_separate_optimizers"
     ppo_experiment_notes: str = "Initial PPO training on Earth orbit"
@@ -68,6 +70,16 @@ class ExpConfig:
     dagger_resume_model_path: str = field(init=False)
     acmpc_resume_model_path: str = field(init=False)
 
+    ppo_log_path: str = field(init=False)
+    dagger_logs_path: str = field(init=False)
+    acmpc_logs_path: str = field(init=False)
+
+    ppo_final_model_path: str = field(init=False)
+    dagger_final_model_path: str = field(init=False)
+    acmpc_final_model_path: str = field(init=False)
+
+
+
     nx: int = 7
     nu: int = 3
 
@@ -82,7 +94,13 @@ class ExpConfig:
         self.dagger_resume_model_path: str = self.dagger_base_save_path + f"/{self.dagger_experiment_name}" + "/checkpoints" + f"/model_{self.dagger_resume_timesteps}_steps.eqx"
         self.acmpc_resume_model_path: str = self.acmpc_base_save_path + f"/{self.acmpc_experiment_name}" + "/checkpoints" + f"/model_{self.resume_acmpc_timesteps}_steps.eqx"
 
-    
+        self.ppo_log_path: str = self.ppo_base_log_path + f"/{self.ppo_experiment_name}"
+        self.dagger_log_path: str = self.dagger_base_log_path + f"/{self.dagger_experiment_name}"
+        self.acmpc_log_path: str = self.acmpc_base_log_path + f"/{self.acmpc_experiment_name}"
+
+        self.ppo_final_model_path: str = self.ppo_base_save_path + f"/{self.ppo_experiment_name}" + f"/model_final.zip"
+        self.dagger_final_model_path: str = self.dagger_base_save_path + f"/{self.dagger_experiment_name}" + f"/model_final.eqx"
+        self.acmpc_final_model_path: str = self.acmpc_base_save_path + f"/{self.acmpc_experiment_name}" + f"/model_final.eqx"
 
 
 

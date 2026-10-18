@@ -25,7 +25,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import jax.random as jrandom
-from mj_utils import sample_state
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -180,6 +179,35 @@ class SpacecraftEnv(gym.Env):
         print(f"  -0.1 * action_norm: {-0.1 * np.mean(action_norms):.3f}")
 
 
+
+    def _sample_state(self, batch_size, key, omega_min=0.0, omega_max=0.0):
+
+        """
+        Samples a batch of random states for the spacecraft environment.
+
+        Args:
+            batch_size: Number of states to sample.
+            key: JAX key.
+            omega_min: Minimum angular velocity (rad/s).
+            omega_max: Maximum angular velocity (rad/s).
+        """
+
+        # Sample omega uniformly
+        key, subkey = jax.random.split(key)
+        omega = jax.random.uniform(subkey, 
+                                shape=(batch_size, 3), 
+                                minval=omega_min, 
+                                maxval=omega_max, 
+                                dtype=jnp.float64)
+
+        # Sample quaternion
+        key, subkey = jax.random.split(key)
+        q = jax.random.normal(subkey, shape=(batch_size, 4), dtype=jnp.float64)
+        q = q / jnp.linalg.norm(q, axis=-1, keepdims=True)
+
+        return jnp.concatenate([q, omega], axis=-1)
+
+
     def _sample_episode_context(self, key):
 
 
@@ -187,28 +215,12 @@ class SpacecraftEnv(gym.Env):
         init_key, target_key = jrandom.split(key, 2)
 
 
-        # Generate initial and target states for spacecraft
-        init_state_specs = [
-                    {'shape': (4,), 'dist': 'quaternion'}, # quaternion
-                    {'shape': (3,), 'dist': 'uniform', 'min': 0.0, 'max': 0.0} # angular velocity
-        ]
+        target_state = self._sample_state(batch_size=1, key=target_key, omega_min=0.0, omega_max=0.0)[0]
+        initial_state = self._sample_state(batch_size=1, key=init_key, omega_min=0.0, omega_max=0.0)[0]
 
-        target_state_specs = [
-                    {'shape': (4,), 'dist': 'quaternion'}, # quaternion
-                    {'shape': (3,), 'dist': 'uniform', 'min': 0.0, 'max': 0.0} # angular velocity
-        ]
-
-        # target_state = sample_initial_states(batch_size=1, key=target_key, state_specs=target_state_specs)[0]
-        # initial_state = sample_initial_states(batch_size=1, key=init_key, state_specs=init_state_specs)[0]
-
-        target_state = sample_state(batch_size=1, key=target_key, omega_min=0.0, omega_max=0.0)[0]
-        initial_state = sample_state(batch_size=1, key=init_key, omega_min=0.0, omega_max=0.0)[0]
-
-        """
+        target_state = np.asarray(target_state)
+        initial_state = np.asarray(initial_state)
         
-        I have absolutely zero idea if I am supposed to do this but I'm copying his code so whatever
-        
-        """
         context = {
             "initial_state": initial_state,
             "goal_state": target_state,
