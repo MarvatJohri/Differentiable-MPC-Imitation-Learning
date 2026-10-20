@@ -1,6 +1,6 @@
 """
 
-Common items used everywhere within this directory
+For reward and obs normalization
 
 """
 

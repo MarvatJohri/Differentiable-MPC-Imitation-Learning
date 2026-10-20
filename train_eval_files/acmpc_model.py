@@ -280,7 +280,7 @@ class DiffMPCController(eqx.Module):
     dt: float = eqx.field(static=True)
 
     state_limits: Float[Array, "6 2"] = eqx.field(static=True)
-    control_limits: Float[Array, "6 2"] = eqx.field(static=True)
+    control_limits: Float[Array, "3 2"] = eqx.field(static=True)
     inertia: Float[Array, "3 3"] = eqx.field(static=True)
     inertia_inv: Float[Array, "3 3"] = eqx.field(static=True)
     mass: float = eqx.field(static=True)

@@ -41,7 +41,7 @@ sys.path.append(str(MJ_WORK))
 import equinox as eqx
 from simulation_env_jax import SpacecraftEnvJax
 from configs import ExpConfig, SpacecraftEnvConfig, ACMPCHyperparameters
-from purejaxrl_utils import RunningMeanStd, init_ret_rms, update_rms
+from utils.running_mean_std import RunningMeanStd, init_ret_rms, update_rms
 
 from time import time
 
@@ -564,7 +564,7 @@ def make_train(config, env: SpacecraftEnvJax):
                 # action = pi.sample(seed=_rng)
                 # log_prob = pi.log_prob(action)
 
-
+                prev_goal = env_states.goal_state
                 action, log_prob, value, new_nominal_traj, new_nominal_cntrl = sample_actions_mpc(controller,
                                                                                                   obs,
                                                                                                   env_states.goal_state,
@@ -622,13 +622,16 @@ def make_train(config, env: SpacecraftEnvJax):
 
                 reward = raw_reward
                 if config["NORMALIZE_REWARD"]:
-                    discounted_return = discounted_return * config["GAMMA"] * not_done + raw_reward
+                    # discounted_return = discounted_return * config["GAMMA"] * not_done + raw_reward
+                    discounted_return = discounted_return * config["GAMMA"] + raw_reward
                     # running_stat = update_running_stat(running_stat, discounted_return)
                     # reward = raw_reward / jnp.sqrt(running_stat.var + 1e-8)
 
                     ret_rms = update_rms(ret_rms, discounted_return)
                     reward = raw_reward / jnp.sqrt(ret_rms.var + 1e-8)
                     reward = jnp.clip(reward, -10.0, 10.0)
+
+                    discounted_return = jnp.where(done, 0.0, discounted_return)
  
                 # Time-limit truncation: bootstrap with V(terminal obs).
                 # `info` holds the PRE-reset state / goal / step_count from env.step.
@@ -664,7 +667,7 @@ def make_train(config, env: SpacecraftEnvJax):
                 # )
 
                 transition_mpc = Transition(
-                    done, action, value, reward, log_prob, obs, env_states.goal_state, nominal_traj, nominal_cntrl
+                    done, action, value, reward, log_prob, obs, prev_goal, nominal_traj, nominal_cntrl
                 )
 
 

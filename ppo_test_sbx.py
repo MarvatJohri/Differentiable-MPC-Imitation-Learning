@@ -53,7 +53,7 @@ PPO_BASE_LOG_PATH = str(HERE / "ppo_logs")
 # from utils.learning import load_model
 
 
-from simulation_env_simpler import SpacecraftEnv
+from simulation_env_numpy import SpacecraftEnv
 from simulation_env_jax import SpacecraftEnvJax, generate_n_trajectories
 from mj_utils import make_dummy_controller, compute_metrics, print_metrics, get_sbx_policy
 

@@ -5,7 +5,7 @@ import numpy as np
 
 
 from simulation_env_jax import SpacecraftEnvJax
-from simulation_env_simpler import SpacecraftEnv
+from simulation_env_numpy import SpacecraftEnv
 
 import matplotlib.pyplot as plt
 

@@ -26,7 +26,7 @@ sys.path.append(str(MJ_WORK))
 import equinox as eqx
 from simulation_env_jax import SpacecraftEnvJax
 from configs import ExpConfig, SpacecraftEnvConfig, PPOHyperparameters
-from purejaxrl_utils import RunningMeanStd, init_obs_rms, init_ret_rms, update_rms, normalize_obs
+from utils.running_mean_std import RunningMeanStd, init_obs_rms, init_ret_rms, update_rms, normalize_obs
 
 from time import time
 
@@ -171,7 +171,7 @@ def save_model(model: ActorCritic,
 
     os.makedirs(checkpoint_path, exist_ok=True)
     save_model_state(model, obs_rms, ret_rms, checkpoint_file, model_stats_file)
-    save_train_state(opt_state, obs_rms, ret_rms, key, iteration, train_state_file)
+    save_train_state(opt_state, key, iteration, train_state_file)
 
 
 
@@ -202,6 +202,8 @@ def load_model_state(model: ActorCritic,
                      model_stats_file: str):
 
     # Load model parameters and statistics
+
+    
     model = load_ppo_network(model, checkpoint_file)
     obs_rms, ret_rms = init_obs_rms(model.obs_dim), init_ret_rms()
     model_states_checkpoint = {
@@ -234,7 +236,7 @@ def load_model(model: ActorCritic,
         train_state_file = os.path.join(checkpoint_path, f"train_state_{iteration}_steps.eqx")
 
     model, obs_rms, ret_rms = load_model_state(model, checkpoint_file, model_stats_file)
-    opt_state, key, iteration = load_train_state(opt_state, obs_rms, ret_rms, train_state_file)
+    opt_state, key, iteration = load_train_state(opt_state, train_state_file)
 
     return model, opt_state, obs_rms, ret_rms, key, iteration
 
@@ -277,13 +279,21 @@ def make_train(config, env: SpacecraftEnvJax):
         resume_grad_steps = 0
 
 
-    lr = lr_scheduler(
-        start_lr=config["LEARNING_RATE"],
-        schedule_type=config["LEARNING_RATE_SCHEDULE"],
-        end_lr=config["LEARNING_RATE_FINAL"],
+    actor_lr = lr_scheduler(
+        start_lr=config["ACTOR_LEARNING_RATE"],
+        schedule_type=config["ACTOR_LEARNING_RATE_SCHEDULE"],
+        end_lr=config["ACTOR_LEARNING_RATE_FINAL"],
         total_grad_steps=total_grad_steps,
         resume_grad_steps=resume_grad_steps
-      )
+        )
+
+    critic_lr = lr_scheduler(
+        start_lr=config["CRITIC_LEARNING_RATE"],
+        schedule_type=config["CRITIC_LEARNING_RATE_SCHEDULE"],
+        end_lr=config["CRITIC_LEARNING_RATE_FINAL"],
+        total_grad_steps=total_grad_steps,
+        resume_grad_steps=resume_grad_steps
+        )
 
     obs_dim = config["OBS_DIM"]
     act_dim = config["ACT_DIM"]
@@ -411,11 +421,11 @@ def make_train(config, env: SpacecraftEnvJax):
             {
                 "actor": optax.chain(
                     optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                    optax.adam(learning_rate=config["ACTOR_LEARNING_RATE"], eps=1e-5),
+                    optax.adam(learning_rate=actor_lr, eps=1e-5),
                 ),
                 "critic": optax.chain(
                     optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                    optax.adam(learning_rate=config["CRITIC_LEARNING_RATE"], eps=1e-5),
+                    optax.adam(learning_rate=critic_lr, eps=1e-5),
                 ),
             },
             labels,   
@@ -486,13 +496,16 @@ def make_train(config, env: SpacecraftEnvJax):
 
                 reward = raw_reward
                 if config["NORMALIZE_REWARD"]:
-                    discounted_return = discounted_return * config["GAMMA"] * not_done + raw_reward
+                    # discounted_return = discounted_return * config["GAMMA"] * not_done + raw_reward
+                    discounted_return = discounted_return * config["GAMMA"] + raw_reward
                     # running_stat = update_running_stat(running_stat, discounted_return)
                     # reward = raw_reward / jnp.sqrt(running_stat.var + 1e-8)
 
                     ret_rms = update_rms(ret_rms, discounted_return)
                     reward = raw_reward / jnp.sqrt(ret_rms.var + 1e-8)
                     reward = jnp.clip(reward, -10.0, 10.0)
+
+                    discounted_return = jnp.where(done, 0.0, discounted_return)
  
                 # Time-limit truncation: bootstrap with V(terminal obs).
                 # `info` holds the PRE-reset state / goal / step_count from env.step.
@@ -805,6 +818,8 @@ if __name__ == "__main__":
         "CRITIC_LEARNING_RATE": hyperparams.critic_learning_rate,
         "NET_ARCH": hyperparams.net_arch,
         "LEARNING_RATE_SCHEDULE": hyperparams.learning_rate_schedule,
+        "ACTOR_LEARNING_RATE_SCHEDULE": hyperparams.actor_learning_rate_schedule,
+        "CRITIC_LEARNING_RATE_SCHEDULE": hyperparams.critic_learning_rate_schedule,
         "LEARNING_RATE_FINAL": hyperparams.learning_rate_final,
         "NUM_ENVS": hyperparams.n_envs,
         "NUM_STEPS": hyperparams.n_steps,

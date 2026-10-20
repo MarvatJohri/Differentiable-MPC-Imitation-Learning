@@ -43,7 +43,7 @@ sys.path.insert(0, str((ROOT / "uranus-mpc" / "utils").resolve()))
 # from dynamics.base_dynamics import Dynamics
 # from dynamics.spacecraft_dynamics import SpacecraftDynamics
 # from dynamics.orbit_dynamics import OrbitDynamics
-from simulation_env_simpler import SpacecraftEnv
+from simulation_env_numpy import SpacecraftEnv
 # from dynamics.planetary_params import Earth, Uranus
 
 # from utils.learning import load_model

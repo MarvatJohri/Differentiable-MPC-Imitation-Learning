@@ -27,7 +27,7 @@ from mj_utils import make_dummy_controller, compute_metrics, print_metrics
 
 
 
-from ppo_model import ActorCritic, save_ppo_network, load_network
+from ppo_model import ActorCritic, save_ppo_network, load_ppo_network
 
 
 def get_policy(model: ActorCritic, obs_rms):

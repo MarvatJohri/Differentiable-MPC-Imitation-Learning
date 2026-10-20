@@ -31,7 +31,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 # Import my stuff
 
-from simulation_env_simpler import SpacecraftEnv
+# from mj_work.simulation_env_numpy import SpacecraftEnv
 from replay_buffer import ReplayBuffer, init_buffer, add_trajectories_to_buffer, sample_from_buffer
 from mj_utils import make_dummy_controller, make_dummy_expert, compute_metrics, plot_metrics_bar, print_metrics, plot_metrics_comparison, load_controller, save_controller
 from diffmpc_controller import DiffMPCController, FeedForwardNetwork
@@ -136,7 +136,7 @@ os.makedirs(DAGGER_BASE_SAVE_PATH, exist_ok=True)
 
 def make_env(dynamics_params: Dict, seed: int = None):
     """Create and wrap environment."""
-    env = SpacecraftEnv(
+    env = SpacecraftEnvJax(
         dynamics_params=dynamics_params,
         dt=DT,
         max_ep_steps=MAX_EP_STEPS,

@@ -4,6 +4,7 @@ import optax
 from typing import Sequence, NamedTuple, Any
 import equinox as eqx
 import os
+from utils.running_mean_std import normalize_obs
 
 
 
@@ -92,5 +93,14 @@ def load_ppo_network(model: ActorCritic, checkpoint_file: str) -> ActorCritic:
     print(f"Network parameters loaded from {checkpoint_file}")
     
     return model
+
+def get_policy(model: ActorCritic, obs_rms):
+
+    def policy_fn(obs):
+        obs = normalize_obs(obs, obs_rms)
+        mean = model.mean(obs)
+        return mean
+
+    return policy_fn
 
 

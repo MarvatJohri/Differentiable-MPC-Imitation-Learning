@@ -10,15 +10,17 @@ from dataclasses import dataclass, field
 
 HERE = Path(__file__).parent
 ROOT = HERE.parent
+# RESULTS_PATH = HERE / "results"
+RESULTS_PATH = HERE
 
-PPO_BASE_SAVE_PATH = str(HERE / "ppo_results")
-PPO_BASE_LOG_PATH = str(HERE / "ppo_logs")
+PPO_BASE_SAVE_PATH = str(RESULTS_PATH / "ppo_results")
+PPO_BASE_LOG_PATH = str(RESULTS_PATH / "ppo_logs")
 
-ACMPC_BASE_SAVE_PATH = str(HERE / "acmpc_results")
-ACMPC_BASE_LOG_PATH = str(HERE / "acmpc_logs")
+ACMPC_BASE_SAVE_PATH = str(RESULTS_PATH / "acmpc_results")
+ACMPC_BASE_LOG_PATH = str(RESULTS_PATH / "acmpc_logs")
 
-DAGGER_BASE_SAVE_PATH = str(HERE / "dagger_results")
-DAGGER_BASE_LOG_PATH = str(HERE / "dagger_logs")
+DAGGER_BASE_SAVE_PATH = str(RESULTS_PATH / "dagger_results")
+DAGGER_BASE_LOG_PATH = str(RESULTS_PATH / "dagger_logs")
 
 SPACECRAFT_DYNAMICS_PARAMETERS = {
     "mass": 0.75,
@@ -50,7 +52,7 @@ class ExpConfig:
     ppo_experiment_name: str = "spacecraft_ppo_purejax_separate_optimizers"
     ppo_experiment_notes: str = "Initial PPO training on Earth orbit"
 
-    acmpc_experiment_name: str = "spacecraft_acmpc_purejax_epx1"
+    acmpc_experiment_name: str = "spacecraft_acmpc_purejax_epx_older_guaranteed_working"
     acmpc_experiment_notes: str = "Initial AC-MPC training on Earth orbit"
 
     dagger_experiment_name: str = "spacecraft_ppo_dagger_exp1"

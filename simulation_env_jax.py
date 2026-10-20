@@ -608,7 +608,7 @@ def rollout_controller(env: SpacecraftEnvJax,
 
     def scan_step(carry, _):
 
-        env_state, obs, i, nominal_traj, nominal_cntrl, key, __, ___ = carry
+        env_state, obs, i, nominal_traj, nominal_cntrl, key = carry
 
 
         def controller_wrapper(operand):
@@ -636,13 +636,17 @@ def rollout_controller(env: SpacecraftEnvJax,
         action = action / max_torque
 
         # Extract Q, R from controller for debugging
-        Q, R = network_output_to_QR(controller.network(obs))
+        Q, R = network_output_to_QR(controller.network(obs), 
+                                    controller.nx -1, 
+                                    controller.nu, 
+                                    controller.network.decomposition_type,
+                                    controller.qr_output_horizon)
 
 
         # Run executed action on the environment using the step key inside the env_state
         new_env_state, new_obs, reward, done, info = env.step(env_state, action)
 
-        new_carry = (new_env_state, new_obs, i+1, new_nominal_traj, new_nominal_cntrl, key, Q, R)
+        new_carry = (new_env_state, new_obs, i+1, new_nominal_traj, new_nominal_cntrl, key)
 
         outputs = (obs, action*max_torque, Q, R)
         # outputs = (obs, action*max_torque)
@@ -661,14 +665,18 @@ def rollout_controller(env: SpacecraftEnvJax,
     key, subkey = jax.random.split(key)
     nominal_traj = jnp.tile(init_env_state.state, (horizon + 1, 1))
     nominal_cntrl = 1e-8 * jax.random.normal(subkey, shape=(horizon, nu), dtype=jnp.float64)
-
     init_carry = (init_env_state, init_obs, 0, nominal_traj, nominal_cntrl, key)
 
     # Do the for loop
     final_carry, outputs = jax.lax.scan(scan_step, init_carry, xs=None, length=max_ep_steps)
 
-    final_env_state, final_obs, final_i, final_nominal_traj, final_nominal_cntrl, final_key, final_Q, final_R = final_carry
+    final_env_state, final_obs, final_i, final_nominal_traj, final_nominal_cntrl, final_key = final_carry
     observations, actions, Q_list, R_list = outputs
+    final_Q, final_R = network_output_to_QR(controller.network(final_obs), 
+                                            controller.nx -1, 
+                                            controller.nu, 
+                                            controller.network.decomposition_type,
+                                            controller.qr_output_horizon)
     final_action = final_nominal_cntrl[0]
     # observations, actions = outputs
 
