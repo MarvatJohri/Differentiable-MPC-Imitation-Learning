@@ -40,7 +40,6 @@ class MPCController(eqx.Module):
     Q: Float[Array, "6 6"] = eqx.field(static=True)
     R: Float[Array, "3 3"] = eqx.field(static=True)
 
-    qr_output_horizon: int = eqx.field(static=True)
     mpc_horizon: int = eqx.field(static=True)
     nx: int = eqx.field(static=True)
     nu: int = eqx.field(static=True)
@@ -60,7 +59,7 @@ class MPCController(eqx.Module):
 
     def __init__(self, 
                  Q,
-                 R,
+                 R_normalized,
                  mpc_horizon, 
                  dt,
                  state_limits, 
@@ -71,7 +70,8 @@ class MPCController(eqx.Module):
 
 
         self.Q = Q
-        self.R = R
+
+        self.R = R_normalized / MAX_TORQUE**2
         self.nx = nx
         self.nu = nu
         self.mpc_horizon = mpc_horizon

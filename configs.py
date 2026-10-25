@@ -249,7 +249,28 @@ class DaggerHyperparameters:
 
 
 
+class MPCParameters:
 
+    mpc_horizon: int = 10
+    nx: int = 7
+    nu: int = 3
+    dt: float = 0.1
+
+    state_limits: jnp.ndarray = field(default_factory=lambda: STATE_LIMITS_MRP)
+    control_limits: jnp.ndarray = field(default_factory=lambda: CONTROL_LIMITS_TORQUE)
+    dynamics_params: dict = field(default_factory=lambda: SPACECRAFT_DYNAMICS_PARAMETERS)
+
+
+    # Q: jnp.ndarray = jnp.diag(jnp.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0]))
+    # R_normalized: jnp.ndarray = jnp.diag(jnp.array([1.0, 1.0, 1.0]))
+
+
+    Q = jnp.diag(jnp.array(
+        [1e7, 1e7, 1e7, 1e-1, 1e-1, 1e-1],
+        dtype=jnp.float64,
+    ))
+
+    R_normalized = 6.4 * jnp.eye(3, dtype=jnp.float64)
 
 
 

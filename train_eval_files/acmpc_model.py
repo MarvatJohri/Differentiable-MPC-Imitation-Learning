@@ -23,7 +23,7 @@ controller_config = ControllerConfig()
 
 DYNAMICS_PARAMS = env_config.spacecraft_dynamics_parameters
 MAX_TORQUE = env_config.max_torque
-CONTROL_LIMITS = env_config.control_limits_torque
+CONTROL_LIMITS_TORQUE = env_config.control_limits_torque
 STATE_LIMITS_MRP = env_config.state_limits_mrp
 DT = env_config.dt
 
@@ -585,7 +585,7 @@ class ActorCriticMPC(eqx.Module):
             mpc_horizon=MPC_HORIZON,
             dt=DT,
             state_limits=STATE_LIMITS_MRP,
-            control_limits=CONTROL_LIMITS,
+            control_limits=CONTROL_LIMITS_TORQUE,
             dynamics_params=DYNAMICS_PARAMS
         )
         self.critic = MLP(obs_dim, layers, critic_key, 1, 1.0)

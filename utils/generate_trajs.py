@@ -14,12 +14,23 @@ from diffmpc_controller import DiffMPCController, network_output_to_QR
 
 
 class Trajectory(NamedTuple):
+    
     observations: jnp.ndarray
     goal_state: jnp.ndarray
     actions: jnp.ndarray
     rewards: jnp.ndarray
     Q: jnp.ndarray | None = None
     R: jnp.ndarray | None = None
+
+
+def _controller_qr(controller, obs):
+    """Read fixed costs or evaluate learned costs, in solver torque units."""
+    if hasattr(controller, "network"):
+        return network_output_to_QR(
+            controller.network(obs), controller.nx - 1, controller.nu,
+            controller.network.decomposition_type, controller.qr_output_horizon,
+        )
+    return controller.Q, controller.R
 
 
 
@@ -198,12 +209,8 @@ def rollout_controller(env: SpacecraftEnvJax,
         action = action / max_torque
 
         # Extract Q, R from controller for debugging
-        if record_qr: 
-            Q, R = network_output_to_QR(controller.network(obs), 
-                                        controller.nx -1, 
-                                        controller.nu, 
-                                        controller.network.decomposition_type,
-                                        controller.qr_output_horizon)
+        if record_qr:
+            Q, R = _controller_qr(controller, obs)
 
 
         # Run executed action on the environment using the step key inside the env_state
@@ -247,19 +254,13 @@ def rollout_controller(env: SpacecraftEnvJax,
     final_carry, outputs = jax.lax.scan(scan_step, init_carry, xs=None, length=max_ep_steps)
 
     final_env_state, final_obs, final_i, final_nominal_traj, final_nominal_cntrl, final_key = final_carry
-    observations, actions, Q_list, R_list = outputs
-
     observations = outputs["obs"]
     actions = outputs["action"]
     rewards = outputs["rewards"]
     if record_qr:
         Q_list = outputs["Q"]
         R_list = outputs["R"]        
-        final_Q, final_R = network_output_to_QR(controller.network(final_obs), 
-                                                controller.nx -1, 
-                                                controller.nu, 
-                                                controller.network.decomposition_type,
-                                                controller.qr_output_horizon)
+        final_Q, final_R = _controller_qr(controller, final_obs)
     
         Q_list = jnp.concatenate([Q_list, final_Q[None, :]], axis=0)
         R_list = jnp.concatenate([R_list, final_R[None, :]], axis=0)
@@ -301,16 +302,20 @@ def n_rollouts_controller(env: SpacecraftEnvJax,
                       horizon: int,
                       max_ep_steps: int,
                       n_rollouts: int,
-                      replan_freq: int = 1):
+                      replan_freq: int = 1,
+                      record_qr: bool = False):
 
     key, subkey = jax.random.split(key)
     batched_keys = jax.random.split(subkey, n_rollouts)
-    trajectories, _ = jax.vmap(rollout_controller, in_axes=(None, None, 0, None, None, None))(env, 
-                                                                                              controller, 
-                                                                                              batched_keys, 
-                                                                                              horizon, 
-                                                                                              max_ep_steps, 
-                                                                                              replan_freq)
+    trajectories, _ = jax.vmap(rollout_controller, 
+                               in_axes=(None, None, 0, None, None, None, None))(env, 
+                                                                          controller, 
+                                                                          batched_keys, 
+                                                                          horizon, 
+                                                                          max_ep_steps, 
+                                                                          replan_freq,
+                                                                          record_qr)
+
     return trajectories, key
 
 
@@ -372,11 +377,8 @@ def rollout_policy(env: SpacecraftEnvJax,
     observations = outputs["obs"]
     actions = outputs["action"]
     rewards = outputs["rewards"]
-    dones = outputs["done"]
     
     observations = jnp.concatenate([observations, final_obs[None, :]], axis=0)
-    final_action = policy(final_obs)
-    actions = jnp.concatenate([actions, final_action[None, :]], axis=0)
 
     # trajectory = (observations, init_env_state.goal_state, actions)
 

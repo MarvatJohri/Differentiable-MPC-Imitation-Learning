@@ -19,7 +19,15 @@ MJ_WORK = HERE.parent
 sys.path.append(str(MJ_WORK))
 
 import equinox as eqx
-from simulation_env_jax import SpacecraftEnvJax, n_rollouts_controller
+import matplotlib.pyplot as plt
+from simulation_env_jax import SpacecraftEnvJax
+from utils.generate_trajs import n_rollouts_controller
+from utils.plotting_and_evaluate import (
+    extract_trajectory_data,
+    plot_rewards,
+    plot_control_trajectories,
+    plot_cost_weights,
+)
 # from simulation_env_jax_test1 import SpacecraftEnvJax
 from configs import ExpConfig, SpacecraftEnvConfig, ACMPCHyperparameters
 from mj_utils import compute_metrics, print_metrics
@@ -164,7 +172,8 @@ def main():
                                                key,horizon=config["MPC_HORIZON"],
                                                max_ep_steps=MAX_EP_STEPS,
                                                n_rollouts=100,
-                                               replan_freq=1)
+                                               replan_freq=1,
+                                               record_qr=True)
     print("Calculated trajectories")
     # rewards = trajectories[-1]
     # returns = rewards.sum(axis=1)
@@ -178,6 +187,26 @@ def main():
     # print("large positive events per rollout:", large_positive_counts)
     metrics = compute_metrics(trajectories)
     print_metrics(metrics)
+
+    runs = {
+        "ACMPC": extract_trajectory_data(
+            trajectories,
+            dt=DT,
+            max_torque=MAX_TORQUE,
+            action_low=CONTROL_LIMITS[:, 0],
+            action_high=CONTROL_LIMITS[:, 1],
+            action_units="torque",
+        )
+    }
+    figure_dir = Path(LOG_PATH) / "figures"
+    plot_rewards(runs, save_path=figure_dir / "rewards.png")
+    plot_control_trajectories(
+        runs, episode=0, save_path=figure_dir / "controls_episode_0.png",
+    )
+    plot_cost_weights(
+        runs, episode=0, save_path=figure_dir / "qr_weights_episode_0.png",
+    )
+    plt.show()
 
 
 if __name__=="__main__":
