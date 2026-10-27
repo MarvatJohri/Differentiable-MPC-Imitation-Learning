@@ -127,42 +127,152 @@ class SpacecraftMagnetorquerEnvJax(eqx.Module):
 
 
 
-    def _sample_state(self, batch_size, key, omega_min=0.0, omega_max=0.0):
+    def sample_initial_states(self, batch_size, key, state_specs):
+
+    
+        # Reference: Patrick Schwarz Uranus-MPC code
+        
 
         """
-        Samples a batch of random states for the spacecraft environment.
+        Generates a batch of random initial states based on provided specs.
 
         Args:
             batch_size: Number of states to sample.
             key: JAX key.
-            omega_min: Minimum angular velocity (rad/s).
-            omega_max: Maximum angular velocity (rad/s).
+            state_specs: List of dicts, e.g., 
+                [{'name': 'pos', 'shape': (3,), 'dist': 'uniform', 'min': -1, 'max': 1},
+                {'name': 'rot', 'shape': (4,), 'dist': 'quaternion'}]
         """
+        states = []
+        
+        for spec in state_specs:
+            key, subkey = jax.random.split(key)
+            dist_type = spec.get('dist', 'uniform')
+            shape = (batch_size,) + spec.get('shape', (1,))
 
-        # Sample omega uniformly
-        key, subkey = jax.random.split(key)
-        omega = jax.random.uniform(subkey, 
-                                shape=(batch_size, 3), 
-                                minval=omega_min, 
-                                maxval=omega_max, 
-                                dtype=jnp.float64)
+            if dist_type == 'uniform':
+                val = jax.random.uniform(subkey, shape=shape, 
+                                    minval=spec['min'], maxval=spec['max'])
+            
+            elif dist_type == 'normal':
+                val = spec.get('mean', 0.0) + spec.get('std', 1.0) * jax.random.normal(subkey, shape=shape)
 
-        # Sample quaternion
-        key, subkey = jax.random.split(key)
-        q = jax.random.normal(subkey, shape=(batch_size, 4), dtype=jnp.float64)
-        q = q / jnp.linalg.norm(q, axis=-1, keepdims=True)
+            elif dist_type == 'quaternion':
+                # Specialized sampler for unit quaternions
+                q = jax.random.normal(subkey, shape=shape)
+                val = q / jnp.linalg.norm(q, axis=-1, keepdims=True)
 
-        return jnp.concatenate([q, omega], axis=-1)
+            elif dist_type == 'constant':
+                return jnp.broadcast_to(jnp.array(spec['value']), shape)
+
+            states.append(val.reshape(batch_size, -1))
+        return jnp.concatenate(states, axis=-1)
     
 
-    def _sample_episode_context(self, key: jax.random.PRNGKey) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    # def _sample_episode_context(self, key: jax.random.PRNGKey) -> Tuple[jnp.ndarray, jnp.ndarray]:
 
-        init_key, target_key = jax.random.split(key)
+    #     init_key, target_key = jax.random.split(key)
 
-        target_state = self._sample_state(1, target_key)[0]
-        initial_state = self._sample_state(1, init_key)[0]
+    #     target_state = self._sample_state(1, target_key)[0]
+    #     initial_state = self._sample_state(1, init_key)[0]
 
-        return initial_state, target_state
+    #     return initial_state, target_state
+
+
+    def _sample_episode_context(self, key):
+    
+    
+        # init_key, orbit_key, target_key, mag_key, mag_new_key = jrandom.split(key, 5)
+        init_key, orbit_key, target_key, mag_key = jax.random.split(key, 4)
+
+
+        # Generate orbit and magnetic field trajectory
+        r_planet = self.planet.radius
+        orbit_specs = [
+            {"dist": "uniform", "min": r_planet + 200.0, "max": r_planet + 400.0},
+            {"dist": "uniform", "min": 0.0, "max": 0.0},
+            {"dist": "uniform", "min": 0.0, "max": jnp.pi / 2},
+            {"dist": "uniform", "min": 0.0, "max": 2 * jnp.pi},
+            {"dist": "uniform", "min": 0.0, "max": 2 * jnp.pi},
+            {"dist": "uniform", "min": 0.0, "max": 2 * jnp.pi},
+        ]
+
+        orbit_states = self.sample_initial_states(batch_size=1, key=orbit_key, state_specs=orbit_specs)[0]
+        orbit_initial_state = coord.orbital_elements_to_pci(orbit_states, planet=self.planet)
+
+        orbit_traj, _ = self.orbit_system.generate_trajectory_batch(
+            initial_states=orbit_initial_state,
+            target_states=None,
+            key=orbit_key,
+            num_steps=self.N_orbit,
+            batch_size=1,
+        )
+
+        b_traj = self.orbit_dynamics.mag_model.generate_magnetometer_data(
+            trajectory = orbit_traj,
+            dt = self.dt,
+            num_steps = self.N_orbit,
+            key = mag_key,
+            noise_std = self.b_noise_std,
+            bias = self.b_bias,
+            batch_size=1,
+        )[0]
+
+        if self.const_mag_field:
+            b_init = b_traj[0]
+            b_traj = jnp.tile(b_init, (self.N_orbit, 1))
+
+        # Compute normalization constant - max absolute value across all components and timesteps
+        # self.B_max = np.max(np.abs(np.array(b_traj))) 
+        
+        # Debug print (remove after verification)
+        # print(f"B_max: {self.B_max:.2e} nT, B_range: [{np.min(b_traj):.2e}, {np.max(b_traj):.2e}]")
+
+
+        # Generate initial and target states for spacecraft
+        init_state_specs = [
+                    {'shape': (4,), 'dist': 'quaternion'}, # quaternion
+                    {'shape': (3,), 'dist': 'uniform', 'min': 0.0, 'max': 0.0} # angular velocity
+        ]
+
+        target_state_specs = [
+                    {'shape': (4,), 'dist': 'quaternion'}, # quaternion
+                    {'shape': (3,), 'dist': 'uniform', 'min': 0.0, 'max': 0.0} # angular velocity
+        ]
+
+        target_state = self._sample_state(batch_size=1, key=target_key, state_specs=target_state_specs)[0]
+        initial_state = self._sample_state(batch_size=1, key=init_key, state_specs=init_state_specs)[0]
+
+
+
+        """
+        
+        I have absolutely zero idea if I am supposed to do this but I'm copying his code so whatever
+        
+        """
+
+
+        # # Get random b-field, always start at beginning of orbit (orbit start points already randomized)
+        # b_batch_idx = jnp.arange(b_traj.shape[0])
+        # mag_new_key, b_key  = jrandom.split(mag_new_key)
+        # shuffled_indices = jrandom.permutation(b_key, b_batch_idx)
+        # batch_indices = shuffled_indices[:1]  # Select the first index from the shuffled indices
+        # b_batch = b_traj[batch_indices, :, :]
+
+        context = {
+            "orbit_elements": orbit_states,
+            "orbit_initial_state": orbit_initial_state,
+            "orbit_traj": orbit_traj,
+            "orbit_xyz": orbit_traj[:, :, :3],
+            "b_traj": b_traj,
+            "initial_state": initial_state,
+            "goal_state": target_state,
+        }
+
+
+
+
+        return context
 
  
 
@@ -462,333 +572,3 @@ class SpacecraftMagnetorquerEnvJax(eqx.Module):
 
 
         
-@eqx.filter_jit
-def generate_trajectory(env: SpacecraftEnvJax, 
-                        controller: DiffMPCController,
-                        expert_policy: Callable, 
-                        key: jax.random.PRNGKey, 
-                        beta: float,
-                        max_ep_steps: int,
-                        replan_freq: int = 1,
-                        horizon: int = 10,
-                        nx: int = 7,
-                        nu: int = 3) -> Dict[str, jnp.ndarray]:
-
-
-    max_torque = env.max_torque
-
-    def scan_step(carry, _):
-
-        env_state, obs, i, nominal_traj, nominal_cntrl, key = carry
-
-        # Get expert action
-        expert_action = expert_policy(obs)
-
-        def controller_wrapper(operand):
-            return controller(*operand)
-
-        def no_update_nom_traj(operand):
-
-            _, __, nominal_traj, nominal_cntrl = operand
-
-            # Shift nominal trajectory and control by one step
-            nominal_traj = jnp.concatenate((nominal_traj[1:],jnp.expand_dims(nominal_traj[-1],axis=0)),axis=0)
-            nominal_cntrl = jnp.concatenate((nominal_cntrl[1:],jnp.expand_dims(nominal_cntrl[-1],axis=0)),axis=0)
-            action = nominal_cntrl[0]
-
-            return action, nominal_traj, nominal_cntrl
-
-        # Get controller action
-        controller_action, controller_nominal_traj, controller_nominal_cntrl = jax.lax.cond(
-            i%replan_freq == 0,
-            controller_wrapper,
-            no_update_nom_traj,
-            operand=(obs, env_state.goal_state, nominal_traj, nominal_cntrl))
-
-        # Normalize controller action
-        controller_action = controller_action / max_torque
-
-        key, subkey = jax.random.split(key)
-        use_expert = jax.random.uniform(subkey) < beta
-
-        executed_action = jnp.where(use_expert, expert_action, controller_action)
-
-        shifted_traj  = jnp.concatenate([nominal_traj[1:],  nominal_traj[-1:]],  axis=0)
-        shifted_cntrl = jnp.concatenate([nominal_cntrl[1:], nominal_cntrl[-1:]], axis=0)
-        new_nominal_traj  = jnp.where(use_expert, shifted_traj,  controller_nominal_traj)
-        new_nominal_cntrl = jnp.where(use_expert, shifted_cntrl, controller_nominal_cntrl)
-
-        # Run executed action on the environment using the step key inside the env_state
-        new_env_state, new_obs, reward, done, info = env.step(env_state, executed_action)
-
-        new_carry = (new_env_state, new_obs, i+1, new_nominal_traj, new_nominal_cntrl, key)
-
-        outputs = (obs, expert_action, nominal_traj, nominal_cntrl)
-
-        return new_carry, outputs
-            
-
-
-    # Initialize stuff
-
-    # Env
-    key, subkey = jax.random.split(key)
-    # seed = jax.random.randint(subkey, shape=(), minval=0, maxval=2**32 - 1)
-    # init_env_state, init_obs, info = env.reset(seed)
-    init_env_state, init_obs, info = env.reset(subkey)
-
-    # Generate initial nominal trajectories
-    key, subkey = jax.random.split(key)
-    nominal_traj = jnp.tile(init_env_state.state, (horizon + 1, 1))
-    nominal_cntrl = 1e-8 * jax.random.normal(subkey, shape=(horizon, nu), dtype=jnp.float64)
-
-    init_carry = (init_env_state, init_obs, 0, nominal_traj, nominal_cntrl, key)
-
-    # Do the for loop
-    final_carry, outputs = jax.lax.scan(scan_step, init_carry, xs=None, length=max_ep_steps)
-
-    final_env_state, final_obs, final_i, final_nominal_traj, final_nominal_cntrl, final_key = final_carry
-    observations, expert_actions, nominal_trajs, nominal_cntrls = outputs
-
-    observations = jnp.concatenate([observations, final_obs[None, :]], axis=0)
-    final_expert_action = expert_policy(final_obs)
-    expert_actions = jnp.concatenate([expert_actions, final_expert_action[None, :]], axis=0)
-
-    nominal_trajs = jnp.concatenate([nominal_trajs, final_nominal_traj[None, :]], axis=0)
-    nominal_cntrls = jnp.concatenate([nominal_cntrls, final_nominal_cntrl[None, :]], axis=0)
-
-    trajectory = (observations, init_env_state.goal_state, expert_actions, nominal_trajs, nominal_cntrls)
-
-    return trajectory, final_key
-
-
-@eqx.filter_jit
-def generate_n_trajectories(env: SpacecraftEnvJax,
-                            controller: DiffMPCController,
-                            expert_policy: Callable,
-                            key: jax.random.PRNGKey,
-                            beta: float,
-                            max_ep_steps: int,
-                            n_trajectories: int,
-                            replan_freq: int = 1):
-
-    key, subkey = jax.random.split(key)
-    batched_keys = jax.random.split(subkey, n_trajectories)
-    trajectories, _ = jax.vmap(generate_trajectory, in_axes=(None, None, None, 0, None, None, None))(env, 
-                                                                                                     controller, 
-                                                                                                     expert_policy, 
-                                                                                                     batched_keys, 
-                                                                                                     beta, 
-                                                                                                     max_ep_steps, 
-                                                                                                     replan_freq)
-    # print(trajectories.shape)
-    # print(key.shape)
-    return trajectories, key
-
-
-def rollout_controller(env: SpacecraftEnvJax,
-                       controller: DiffMPCController,
-                       key: jax.random.PRNGKey,
-                       horizon: int,
-                       max_ep_steps: int,
-                       replan_freq: int = 1,
-                       nx: int = 7,
-                       nu: int = 3):
-
-
-    """
-    
-    Function specifically for MPC type controller(s)
-    of form controller(obs, goal_state, nominal_traj, nominal_cntrl) -> action, new_nominal_traj, new_nominal_cntrl
-    
-    """
-
-
-    max_torque = env.max_torque
-
-    def scan_step(carry, _):
-
-        env_state, obs, i, nominal_traj, nominal_cntrl, key = carry
-
-
-        def controller_wrapper(operand):
-            return controller(*operand)
-
-        def no_update(operand):
-
-            _, __, nominal_traj, nominal_cntrl = operand
-
-            # Shift nominal trajectory and control by one step
-            nominal_traj = jnp.concatenate((nominal_traj[1:],jnp.expand_dims(nominal_traj[-1],axis=0)),axis=0)
-            nominal_cntrl = jnp.concatenate((nominal_cntrl[1:],jnp.expand_dims(nominal_cntrl[-1],axis=0)),axis=0)
-            action = nominal_cntrl[0]
-
-            return action, nominal_traj, nominal_cntrl
-
-        # Get controller action
-        action, new_nominal_traj, new_nominal_cntrl = jax.lax.cond(
-            i%replan_freq == 0,
-            controller_wrapper,
-            no_update,
-            operand=(obs, env_state.goal_state, nominal_traj, nominal_cntrl))
-
-        # Normalize controller action
-        action = action / max_torque
-
-        # Extract Q, R from controller for debugging
-        Q, R = network_output_to_QR(controller.network(obs), 
-                                    controller.nx -1, 
-                                    controller.nu, 
-                                    controller.network.decomposition_type,
-                                    controller.qr_output_horizon)
-
-
-        # Run executed action on the environment using the step key inside the env_state
-        new_env_state, new_obs, reward, done, info = env.step(env_state, action)
-
-        new_carry = (new_env_state, new_obs, i+1, new_nominal_traj, new_nominal_cntrl, key)
-
-        outputs = (obs, action*max_torque, Q, R)
-        # outputs = (obs, action*max_torque)
-
-        return new_carry, outputs
-            
-
-
-    # Env
-    key, subkey = jax.random.split(key)
-    # seed = jax.random.randint(subkey, shape=(), minval=0, maxval=2**32 - 1)
-    # init_env_state, init_obs, info = env.reset(seed)
-    init_env_state, init_obs, info = env.reset(subkey)
-
-    # Generate initial nominal trajectories
-    key, subkey = jax.random.split(key)
-    nominal_traj = jnp.tile(init_env_state.state, (horizon + 1, 1))
-    nominal_cntrl = 1e-8 * jax.random.normal(subkey, shape=(horizon, nu), dtype=jnp.float64)
-    init_carry = (init_env_state, init_obs, 0, nominal_traj, nominal_cntrl, key)
-
-    # Do the for loop
-    final_carry, outputs = jax.lax.scan(scan_step, init_carry, xs=None, length=max_ep_steps)
-
-    final_env_state, final_obs, final_i, final_nominal_traj, final_nominal_cntrl, final_key = final_carry
-    observations, actions, Q_list, R_list = outputs
-    final_Q, final_R = network_output_to_QR(controller.network(final_obs), 
-                                            controller.nx -1, 
-                                            controller.nu, 
-                                            controller.network.decomposition_type,
-                                            controller.qr_output_horizon)
-    final_action = final_nominal_cntrl[0]
-    # observations, actions = outputs
-
-    observations = jnp.concatenate([observations, final_obs[None, :]], axis=0)
-    actions = jnp.concatenate([actions, final_action[None, :]], axis=0)
-    Q_list = jnp.concatenate([Q_list, final_Q[None, :]], axis=0)
-    R_list = jnp.concatenate([R_list, final_R[None, :]], axis=0)
-    
-
-    # nominal_trajs = jnp.concatenate([nominal_trajs, final_nominal_traj[None, :]], axis=0)
-    # nominal_cntrls = jnp.concatenate([nominal_cntrls, final_nominal_cntrl[None, :]], axis=0)
-
-    # trajectory = (observations, init_env_state.goal_state, actions, Q_list, R_list)
-    trajectory = (observations, init_env_state.goal_state, actions, Q_list, R_list)
-
-    return trajectory, final_key
-
-@eqx.filter_jit
-def n_rollouts_controller(env: SpacecraftEnvJax,
-                      controller: DiffMPCController,
-                      key: jax.random.PRNGKey,
-                      horizon: int,
-                      max_ep_steps: int,
-                      n_rollouts: int,
-                      replan_freq: int = 1):
-
-    key, subkey = jax.random.split(key)
-    batched_keys = jax.random.split(subkey, n_rollouts)
-    trajectories, _ = jax.vmap(rollout_controller, in_axes=(None, None, 0, None, None, None))(env, 
-                                                                                              controller, 
-                                                                                              batched_keys, 
-                                                                                              horizon, 
-                                                                                              max_ep_steps, 
-                                                                                              replan_freq)
-    return trajectories, key
-
-
-def rollout_policy(env: SpacecraftEnvJax, 
-                   policy: Callable, 
-                   key: jax.random.PRNGKey, 
-                   max_ep_steps: int,
-                   ):
-
-
-    """
-    
-    Function to rollout a policy of form policy(obs) -> action
-
-    To be used for standard RL policies like PPO
-    
-    """
-
-    max_torque = env.max_torque
-    
-    def scan_step(carry, _):
-
-        env_state, obs, i, key = carry
-
-        action = policy(obs)
-        key, subkey = jax.random.split(key)
-
-        # Run executed action on the environment using the step key inside the env_state
-        new_env_state, new_obs, reward, done, info = env.step(env_state, action)
-
-        new_carry = (new_env_state, new_obs, i+1, subkey)
-
-        outputs = (obs, action, reward, done, info)
-
-        return new_carry, outputs
-            
-
-
-    # Initialize stuff
-
-    # Env
-    key, subkey = jax.random.split(key)
-    init_env_state, init_obs, info = env.reset(subkey)
-
-    init_carry = (init_env_state, init_obs, 0, key)
-
-    # Do the for loop
-    final_carry, outputs = jax.lax.scan(scan_step, init_carry, xs=None, length=max_ep_steps)
-
-    final_env_state, final_obs, final_i, final_key = final_carry
-    observations, actions, rewards, dones, infos = outputs
-
-    observations = jnp.concatenate([observations, final_obs[None, :]], axis=0)
-    final_action = policy(final_obs)
-    actions = jnp.concatenate([actions, final_action[None, :]], axis=0)
-
-    trajectory = (observations, init_env_state.goal_state, actions)
-
-    return trajectory, final_key
-
-
-@eqx.filter_jit
-def n_rollouts_policy(env: SpacecraftEnvJax,
-                      policy: Callable,
-                      key: jax.random.PRNGKey,
-                      max_ep_steps: int,
-                      n_rollouts: int):
-
-    key, subkey = jax.random.split(key)
-    batched_keys = jax.random.split(subkey, n_rollouts)
-    trajectories, _ = jax.vmap(rollout_policy, in_axes=(None, None, 0, None))(env, 
-                                                                             policy, 
-                                                                             batched_keys, 
-                                                                             max_ep_steps)
-    return trajectories, key
-
-
-    
-
-
-

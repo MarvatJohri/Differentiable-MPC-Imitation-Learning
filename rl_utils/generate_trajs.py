@@ -307,14 +307,15 @@ def n_rollouts_controller(env: SpacecraftEnvJax,
 
     key, subkey = jax.random.split(key)
     batched_keys = jax.random.split(subkey, n_rollouts)
-    trajectories, _ = jax.vmap(rollout_controller, 
-                               in_axes=(None, None, 0, None, None, None, None))(env, 
-                                                                          controller, 
-                                                                          batched_keys, 
-                                                                          horizon, 
-                                                                          max_ep_steps, 
-                                                                          replan_freq,
-                                                                          record_qr)
+    trajectories, _ = jax.vmap(
+        lambda rollout_key: rollout_controller(
+            env, controller, rollout_key,
+            horizon=horizon,
+            max_ep_steps=max_ep_steps,
+            replan_freq=replan_freq,
+            record_qr=record_qr,
+        )
+    )(batched_keys)
 
     return trajectories, key
 

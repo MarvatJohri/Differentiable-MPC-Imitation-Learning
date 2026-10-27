@@ -41,7 +41,7 @@ sys.path.append(str(MJ_WORK))
 import equinox as eqx
 from simulation_env_jax import SpacecraftEnvJax
 from configs import ExpConfig, SpacecraftEnvConfig, ACMPCHyperparameters
-from utils.running_mean_std import RunningMeanStd, init_ret_rms, update_rms
+from rl_utils.running_mean_std import RunningMeanStd, init_ret_rms, update_rms
 
 from time import time
 

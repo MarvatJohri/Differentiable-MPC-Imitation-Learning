@@ -7,9 +7,23 @@ dict of all hyperparams used in models
 import jax.numpy as jnp
 from pathlib import Path
 from dataclasses import dataclass, field
+import sys
+
 
 HERE = Path(__file__).parent
-ROOT = HERE.parent
+MJ_WORK = HERE.parent
+ROOT = MJ_WORK.parent
+URANUS_MPC_PATH = ROOT / "uranus-mpc"
+
+sys.path.append(str(URANUS_MPC_PATH))
+sys.path.append(str(MJ_WORK))
+
+from rl_utils.planet_params import PlanetParams, Earth, Uranus
+
+from mj_work.environments.spacecraft_env_torque_only_noisy import SpacecraftEnvNoisy
+from mj_work.simulation_env_jax import SpacecraftEnvJax
+
+
 # RESULTS_PATH = HERE / "results"
 RESULTS_PATH = HERE
 
@@ -39,6 +53,8 @@ DAGGER_LAYERS = [256, 256]
 
 @dataclass
 class ExpConfig:
+
+    env_name: str = "spacecraft_env"
 
     ppo_base_save_path: str = PPO_BASE_SAVE_PATH
     ppo_base_log_path: str = PPO_BASE_LOG_PATH
@@ -129,6 +145,123 @@ class SpacecraftEnvConfig:
     action_penalty: float = 0.1
 
     spacecraft_dynamics_parameters: dict = field(default_factory=lambda: SPACECRAFT_DYNAMICS_PARAMETERS)
+
+
+
+@dataclass
+class SpacecraftEnvConfigNoisy:
+
+
+    # spacecraft_dynamics_parameters: dict = SPACECRAFT_DYNAMICS_PARAMETERS
+    dt: float = 0.1
+    max_ep_steps: int = 1500
+    state_limits: jnp.ndarray = field(default_factory=lambda: STATE_LIMITS)
+    state_limits_mrp: jnp.ndarray = field(default_factory=lambda: STATE_LIMITS_MRP)
+    control_limits: jnp.ndarray = field(default_factory=lambda: CONTROL_LIMITS)
+    max_torque: float = MAX_TORQUE
+    control_limits_torque: jnp.ndarray = field(default_factory=lambda: CONTROL_LIMITS_TORQUE)
+    dyn_noise_std: float = 1e-6
+    theta_threshold: float = float(jnp.deg2rad(15.0))
+    omega_threshold: float = float(jnp.deg2rad(5.0))
+    theta_stability_tol: float = float(jnp.deg2rad(10.0))
+    omega_stability_tol: float = float(jnp.deg2rad(5.0))
+    theta_threshold_reward: float = 10.0
+    goal_reward: float = 50.0
+    omega_fail_penalty: float = 50.0
+    omega_penalty: float = 0.5
+    action_penalty: float = 0.1
+
+    spacecraft_dynamics_parameters: dict = field(default_factory=lambda: SPACECRAFT_DYNAMICS_PARAMETERS)
+
+
+    N_orbit: int = 5000,
+    planet: PlanetParams = Earth,
+    mag_field_horizon: int = 1,
+    normalize_mag: bool = True,
+    mag_field_scale: float = 1e-4,
+    const_mag_field: bool = False,
+    b_noise_std: float = 0.0,
+    b_bias: jnp.ndarray = field(default_factory=lambda: jnp.zeros((3,))),
+
+
+
+def get_env():
+
+    env_name = ExpConfig().env_name
+
+    if env_name == "spacecraft_env":
+
+        config = SpacecraftEnvConfig()
+        env = SpacecraftEnvJax(dynamics_params=config.spacecraft_dynamics_parameters,
+                               dt=config.dt,
+                              max_ep_steps=config.max_ep_steps,
+                              state_limits=config.state_limits,
+                              state_limits_mrp=config.state_limits_mrp,
+                              control_limits=config.control_limits,
+                              max_torque=config.max_torque,
+                              control_limits_torque=config.control_limits_torque,
+                              dyn_noise_std=config.dyn_noise_std,
+                              theta_threshold=config.theta_threshold,
+                              omega_threshold=config.omega_threshold,
+                              theta_stability_tol=config.theta_stability_tol,
+                              omega_stability_tol=config.omega_stability_tol,
+                              theta_threshold_reward=config.theta_threshold_reward,
+                              goal_reward=config.goal_reward,
+                              omega_fail_penalty=config.omega_fail_penalty,
+                              omega_penalty=config.omega_penalty,
+                              action_penalty=config.action_penalty)
+
+
+
+        env = SpacecraftEnvJax(dynamics_params=config.spacecraft_dynamics_parameters,
+                               dt=config.dt,
+                               max_ep_steps=config.max_ep_steps,
+                               state_limits=config.state_limits,
+                               control_limits=config.control_limits,
+                               max_torque=config.max_torque,
+                               dyn_noise_std=config.dyn_noise_std,
+                               theta_threshold=config.theta_threshold,
+                               omega_threshold=config.omega_threshold,
+                               theta_threshold_reward=config.theta_threshold_reward,
+                               omega_penalty=config.omega_penalty,
+                               omega_fail_penalty=config.omega_fail_penalty,
+                               action_penalty=config.action_penalty,
+                               goal_reward=config.goal_reward)
+
+
+    elif env_name == "spacecraft_env_noisy":
+        config = SpacecraftEnvConfigNoisy()
+        env = SpacecraftEnvNoisy(dynamics_params=config.spacecraft_dynamics_parameters,
+                                 dt=config.dt,
+                                 max_ep_steps=config.max_ep_steps,
+                                 state_limits=config.state_limits,
+                                 control_limits=config.control_limits,
+                                 max_torque=config.max_torque,
+                                 dyn_noise_std=config.dyn_noise_std,
+                                 theta_threshold=config.theta_threshold,
+                                 omega_threshold=config.omega_threshold,
+                                 theta_stability_tol=config.theta_stability_tol,
+                                 omega_stability_tol=config.omega_stability_tol,
+                                 theta_threshold_reward=config.theta_threshold_reward,
+                                 goal_reward=config.goal_reward,
+                                 omega_fail_penalty=config.omega_fail_penalty,
+                                 omega_penalty=config.omega_penalty,
+                                 action_penalty=config.action_penalty,
+                                 N_orbit=config.N_orbit,
+                                 planet=config.planet,
+                                 mag_field_horizon=config.mag_field_horizon,
+                                 normalize_mag=config.normalize_mag,
+                                 mag_field_scale=config.mag_field_scale,
+                                 const_mag_field=config.const_mag_field,
+                                 b_noise_std=config.b_noise_std,
+                                 b_bias=config.b_bias)
+
+    else:
+        raise ValueError(f"Unknown environment name: {env_name}")
+
+
+    return env
+
 
 
 
