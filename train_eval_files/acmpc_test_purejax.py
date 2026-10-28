@@ -156,10 +156,10 @@ def main():
     # Generate trajectories using the loaded model
     trajectories, keys = n_rollouts_controller(env,
                                                acmpc_controller,
-                                               key,horizon=config["MPC_HORIZON"],
+                                               key,horizon=acmpc_controller.mpc_horizon,
                                                max_ep_steps=MAX_EP_STEPS,
                                                n_rollouts=100,
-                                               replan_freq=1,
+                                               replan_freq=config["REPLAN_FREQUENCY"],
                                                record_qr=True)
     print("Calculated trajectories")
     # rewards = trajectories[-1]
@@ -172,7 +172,16 @@ def main():
 
     # large_positive_counts = (rewards > 20.0).sum(axis=1)
     # print("large positive events per rollout:", large_positive_counts)
-    metrics = compute_metrics(trajectories)
+    metrics = compute_metrics(
+        trajectories,
+        dt=env.dt,
+        angle_threshold=float(jnp.rad2deg(env.theta_threshold)),
+        omega_threshold=float(jnp.rad2deg(env.omega_threshold)),
+        angle_tol_stability=float(jnp.rad2deg(THETA_STABILITY_TOL)),
+        omega_tol_stability=float(jnp.rad2deg(OMEGA_STABILITY_TOL)),
+        tail_length=100,
+        label="ACMPC",
+    )
     print_metrics(metrics)
 
     runs = {
