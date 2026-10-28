@@ -20,8 +20,7 @@ sys.path.append(str(MJ_WORK))
 
 from rl_utils.planet_params import PlanetParams, Earth, Uranus
 
-from mj_work.environments.spacecraft_env_torque_only_noisy import SpacecraftEnvNoisy
-from mj_work.simulation_env_jax import SpacecraftEnvJax
+
 
 
 # RESULTS_PATH = HERE / "results"
@@ -68,7 +67,7 @@ class ExpConfig:
     ppo_experiment_name: str = "spacecraft_ppo_purejax_separate_optimizers"
     ppo_experiment_notes: str = "Initial PPO training on Earth orbit"
 
-    acmpc_experiment_name: str = "spacecraft_acmpc_purejax_epx_older_guaranteed_working"
+    acmpc_experiment_name: str = "spacecraft_acmpc_purejax"
     acmpc_experiment_notes: str = "Initial AC-MPC training on Earth orbit"
 
     dagger_experiment_name: str = "spacecraft_ppo_dagger_exp1"
@@ -174,42 +173,27 @@ class SpacecraftEnvConfigNoisy:
     spacecraft_dynamics_parameters: dict = field(default_factory=lambda: SPACECRAFT_DYNAMICS_PARAMETERS)
 
 
-    N_orbit: int = 5000,
-    planet: PlanetParams = Earth,
-    mag_field_horizon: int = 1,
-    normalize_mag: bool = True,
-    mag_field_scale: float = 1e-4,
-    const_mag_field: bool = False,
-    b_noise_std: float = 0.0,
-    b_bias: jnp.ndarray = field(default_factory=lambda: jnp.zeros((3,))),
+    N_orbit: int = 5000
+    planet: PlanetParams = Earth
+    mag_field_horizon: int = 1
+    normalize_mag: bool = True
+    mag_field_scale: float = 1e-4
+    const_mag_field: bool = False
+    b_noise_std: float = 0.0
+    b_bias: jnp.ndarray = field(default_factory=lambda: jnp.zeros((3,)))
 
 
 
-def get_env():
+def get_env(env_name: str = None):
 
-    env_name = ExpConfig().env_name
+    if env_name is None:
+        env_name = ExpConfig().env_name
 
     if env_name == "spacecraft_env":
+        from simulation_env_jax import SpacecraftEnvJax
+        
 
         config = SpacecraftEnvConfig()
-        env = SpacecraftEnvJax(dynamics_params=config.spacecraft_dynamics_parameters,
-                               dt=config.dt,
-                              max_ep_steps=config.max_ep_steps,
-                              state_limits=config.state_limits,
-                              state_limits_mrp=config.state_limits_mrp,
-                              control_limits=config.control_limits,
-                              max_torque=config.max_torque,
-                              control_limits_torque=config.control_limits_torque,
-                              dyn_noise_std=config.dyn_noise_std,
-                              theta_threshold=config.theta_threshold,
-                              omega_threshold=config.omega_threshold,
-                              theta_stability_tol=config.theta_stability_tol,
-                              omega_stability_tol=config.omega_stability_tol,
-                              theta_threshold_reward=config.theta_threshold_reward,
-                              goal_reward=config.goal_reward,
-                              omega_fail_penalty=config.omega_fail_penalty,
-                              omega_penalty=config.omega_penalty,
-                              action_penalty=config.action_penalty)
 
 
 
@@ -230,6 +214,8 @@ def get_env():
 
 
     elif env_name == "spacecraft_env_noisy":
+        from environments.spacecraft_env_torque_only_noisy import SpacecraftEnvNoisy
+        
         config = SpacecraftEnvConfigNoisy()
         env = SpacecraftEnvNoisy(dynamics_params=config.spacecraft_dynamics_parameters,
                                  dt=config.dt,
@@ -240,8 +226,6 @@ def get_env():
                                  dyn_noise_std=config.dyn_noise_std,
                                  theta_threshold=config.theta_threshold,
                                  omega_threshold=config.omega_threshold,
-                                 theta_stability_tol=config.theta_stability_tol,
-                                 omega_stability_tol=config.omega_stability_tol,
                                  theta_threshold_reward=config.theta_threshold_reward,
                                  goal_reward=config.goal_reward,
                                  omega_fail_penalty=config.omega_fail_penalty,
@@ -377,8 +361,8 @@ class DaggerHyperparameters:
     replan_frequency: int = 1
     log_every: int = 1
     checkpoint_frequency: int = 10
-    eval_frequency: int = 10
-    num_eval_eps: int = 100
+    eval_frequency: int = 20
+    num_eval_eps: int = 10
 
 
 

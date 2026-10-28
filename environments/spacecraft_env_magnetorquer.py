@@ -122,7 +122,7 @@ class SpacecraftEnvNoisy(eqx.Module):
     
 
     def __init__(self,
-                 dynamics_params=DYNAMICS_PARAMS,
+                 dynamics_params,
                  dt: Optional[float] = 0.1,
                  max_ep_steps: Optional[int] = 1500,
                  state_limits: Optional[jnp.ndarray] = None,
@@ -139,8 +139,6 @@ class SpacecraftEnvNoisy(eqx.Module):
                  N_orbit: Optional[int] = 5000,
                  planet=Earth,
                  mag_field_horizon: Optional[int] = 1,
-                 normalize_mag: Optional[bool] = True,
-                 mag_field_scale: Optional[float] = 1e-4,
                  const_mag_field: Optional[bool] = False,
                  b_noise_std: Optional[float] = 0.0,
                  b_bias: Optional[jnp.ndarray] = jnp.zeros((3,)),

@@ -1,20 +1,17 @@
-"""
-
-Test file for the diff mpc controller
-
-
-"""
+"""Evaluate the imitation-learned differentiable MPC controller."""
 import os
 
-
 import jax
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
-from configs import ExpConfig, SpacecraftEnvConfig, DaggerHyperparameters, ControllerConfig
-from mj_utils import load_controller, save_controller, make_dummy_expert, compute_metrics,compute_metrics_multi, plot_metrics_bar, print_metrics, plot_metrics_comparison
-from simulation_env_jax import SpacecraftEnvJax, generate_n_trajectories
+from configs import (
+    ExpConfig, SpacecraftEnvConfig, DaggerHyperparameters, ControllerConfig,
+    get_env,
+)
 from diffmpc_controller import DiffMPCController, FeedForwardNetwork
-
+from mj_utils import load_controller, compute_metrics, print_metrics
+from rl_utils.generate_trajs import n_rollouts_controller
 
 
 exp_config = ExpConfig()
@@ -22,155 +19,79 @@ env_config = SpacecraftEnvConfig()
 hyperparameters = DaggerHyperparameters()
 controller_config = ControllerConfig()
 
-
-# Load Hyperparameters
-
-PPO_BASE_SAVE_PATH = exp_config.ppo_base_save_path
-PPO_BASE_LOG_PATH = exp_config.ppo_base_log_path
-
-DAGGER_BASE_SAVE_PATH = exp_config.dagger_base_save_path
-
-PPO_EXPERIMENT_NAME = exp_config.ppo_experiment_name
-DAGGER_EXPERIMENT_NAME = exp_config.dagger_experiment_name
-DAGGER_EXPERIMENT_NOTES = exp_config.dagger_experiment_notes
-
-
-
-SAVE_PATH = os.path.join(DAGGER_BASE_SAVE_PATH, DAGGER_EXPERIMENT_NAME)
-EVAL_SAVE_PATH = os.path.join(SAVE_PATH, "eval_results")
-
-
-
-
-
-
-
-RESUME = exp_config.resume_dagger_training
-
+# Switch to "spacecraft_env" to evaluate the original torque environment.
+ENV_NAME = "spacecraft_env"
+N_ROLLOUTS = 100
 SEED = exp_config.seed
 
+SAVE_PATH = os.path.join(
+    exp_config.dagger_base_save_path, exp_config.dagger_experiment_name,
+)
+EVAL_SAVE_PATH = os.path.join(SAVE_PATH, "eval_results", ENV_NAME)
 
-LOAD_FROM_CHECKPOINT = False
+LOAD_FROM_CHECKPOINT = True
 LOAD_ITERATION = 0
-
 if LOAD_FROM_CHECKPOINT:
-    MODEL_FILE = os.path.join(SAVE_PATH, f"model_{LOAD_ITERATION}_steps.eqx")
+    MODEL_FILE = os.path.join(
+        SAVE_PATH, "checkpoints", f"model_{LOAD_ITERATION}_steps.eqx",
+    )
 else:
-    MODEL_FILE = os.path.join(SAVE_PATH, f"final_model.eqx")
-
-
-
-
-
-DYNAMICS_PARAMS = env_config.spacecraft_dynamics_parameters
-DT = env_config.dt
-DYN_NOISE_STD = env_config.dyn_noise_std
-MAX_EP_STEPS = env_config.max_ep_steps
-STATE_LIMITS = env_config.state_limits
-STATE_LIMITS_MRP = env_config.state_limits_mrp
-MAX_TORQUE = env_config.max_torque
-CONTROL_LIMITS = env_config.control_limits
-CONTROL_LIMITS_TORQUE = env_config.control_limits_torque
-THETA_THRESHOLD = env_config.theta_threshold
-OMEGA_THRESHOLD = env_config.omega_threshold
-OMEGA_PENALTY = env_config.omega_penalty
-ACTION_PENALTY = env_config.action_penalty
-GOAL_REWARD = env_config.goal_reward
-THETA_THRESHOLD_REWARD = env_config.theta_threshold_reward
-THETA_STABILITY_TOL = env_config.theta_stability_tol
-OMEGA_STABILITY_TOL = env_config.omega_stability_tol
-
-
-LAYERS = hyperparameters.layers
-ACTIVATION = hyperparameters.activation
-OUTPUT_ACTIVATION = hyperparameters.output_activation
-
-
-
-NX = controller_config.nx
-NU = controller_config.nu
-NET_EPS = controller_config.network_epsilon
-DECOMPOSITION_TYPE = controller_config.decomposition_type
-QR_OUTPUT_HORIZON = controller_config.qr_output_horizon
-MPC_HORIZON = controller_config.mpc_horizon
-REPLAN_FREQUENCY = controller_config.replan_frequency
-
-
-
-
+    MODEL_FILE = os.path.join(SAVE_PATH, "final_model.eqx")
 
 
 def main():
-
-    # Make env
-    env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMS,
-                            dt=DT,
-                            max_ep_steps=MAX_EP_STEPS,
-                            state_limits=STATE_LIMITS,
-                            control_limits=CONTROL_LIMITS,
-                            max_torque=MAX_TORQUE,
-                            dyn_noise_std=DYN_NOISE_STD,
-                            theta_threshold=THETA_THRESHOLD,
-                            omega_threshold=OMEGA_THRESHOLD,
-                            theta_threshold_reward=THETA_THRESHOLD_REWARD,
-                            omega_penalty=OMEGA_PENALTY,
-                            action_penalty=ACTION_PENALTY,
-                            goal_reward=GOAL_REWARD)
-
-
-    # rng stuff
+    # The learned controller keeps its original nominal dynamics. Disturbances
+    # are applied by the evaluation environment.
     key = jax.random.PRNGKey(SEED)
+    key, network_key = jax.random.split(key)
+    network = FeedForwardNetwork(
+        nx=controller_config.nx,
+        nu=controller_config.nu,
+        key=network_key,
+        layers=hyperparameters.layers,
+        activation=hyperparameters.activation,
+        output_activation=hyperparameters.output_activation,
+        qr_output_horizon=controller_config.qr_output_horizon,
+        eps=controller_config.network_epsilon,
+        decomposition_type=controller_config.decomposition_type,
+    )
+    controller = DiffMPCController(
+        network=network,
+        mpc_horizon=controller_config.mpc_horizon,
+        dt=env_config.dt,
+        state_limits=env_config.state_limits_mrp,
+        control_limits=env_config.control_limits_torque,
+        dynamics_params=env_config.spacecraft_dynamics_parameters,
+    )
+    controller = load_controller(controller, MODEL_FILE)
 
+    env = get_env(env_name=ENV_NAME)
+    trajectories, _ = n_rollouts_controller(
+        env=env,
+        controller=controller,
+        key=key,
+        horizon=controller_config.mpc_horizon,
+        max_ep_steps=env.max_ep_steps,
+        n_rollouts=N_ROLLOUTS,
+        replan_freq=controller_config.replan_frequency,
+        record_qr=False,
+    )
 
-    key, subkey = jax.random.split(key)
-
-
-
-    # Make network
-    network = FeedForwardNetwork(input_size=NX, 
-                                 output_size=NU, 
-                                 key=subkey,
-                                 layers=LAYERS, 
-                                 activation=ACTIVATION, 
-                                 output_activation=OUTPUT_ACTIVATION,
-                                 qr_output_horizon=QR_OUTPUT_HORIZON,
-                                 epsilon=NET_EPS,
-                                 decomposition_type=DECOMPOSITION_TYPE)
-
-
-    # Make controller
-    controller = DiffMPCController(network=network,
-                                   mpc_horizon=MPC_HORIZON,
-                                   dt = DT,
-                                   state_limits=STATE_LIMITS_MRP,
-                                   control_limits=CONTROL_LIMITS_TORQUE,
-                                   DYNAMICS_PARAMS=DYNAMICS_PARAMS)
-
-    # Load controller 
-    controller = load_controller(controller, DAGGER_BASE_SAVE_PATH, DAGGER_EXPERIMENT_NAME, SEED, RESUME)
-
-
-    # Make dummy expert
-    expert = make_dummy_expert(env, controller, key)
-
-    # Run 100 test episodes and compute metrics
-    trajectories =  generate_n_trajectories(env, 
-                                            controller, 
-                                            expert, 
-                                            key, 
-                                            beta=0, 
-                                            max_ep_steps=MAX_EP_STEPS, 
-                                            n_trajectories=100,
-                                            replan_frequency=REPLAN_FREQUENCY)
-
-    # Compute metrics
-    metrics = compute_metrics(trajectories,
-                              dt=DT, 
-                              angle_threshold=THETA_THRESHOLD,
-                              omega_threshold=OMEGA_THRESHOLD,
-                              angle_tol_stability=THETA_STABILITY_TOL,
-                              omega_tol_stability=OMEGA_STABILITY_TOL,
-                              tail_length=100)
-
-    # Print metrics
+    # compute_metrics converts observed errors to degrees and degrees/second.
+    metrics = compute_metrics(
+        trajectories,
+        dt=env.dt,
+        angle_threshold=float(jnp.rad2deg(env.theta_threshold)),
+        omega_threshold=float(jnp.rad2deg(env.omega_threshold)),
+        angle_tol_stability=float(jnp.rad2deg(env_config.theta_stability_tol)),
+        omega_tol_stability=float(jnp.rad2deg(env_config.omega_stability_tol)),
+        tail_length=100,
+        label=ENV_NAME,
+    )
     print_metrics(metrics)
+    os.makedirs(EVAL_SAVE_PATH, exist_ok=True)
+    metrics.to_csv(os.path.join(EVAL_SAVE_PATH, "metrics.csv"), index=False)
+
+
+if __name__ == "__main__":
+    main()

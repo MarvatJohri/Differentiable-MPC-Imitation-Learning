@@ -46,7 +46,7 @@ env_config = SpacecraftEnvConfig()
 
 # Load Hyperparameters
 
-PPO_BASE_SAVE_PATH = exp_config.ppo_base_save_path
+PPO_BASE_SAVE_PATH = "spacecraft_ppo_v1_torque_only"
 PPO_BASE_LOG_PATH = exp_config.ppo_base_log_path
 
 DAGGER_BASE_SAVE_PATH = exp_config.dagger_base_save_path

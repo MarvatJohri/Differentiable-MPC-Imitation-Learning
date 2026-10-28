@@ -4,7 +4,7 @@ import optax
 from typing import Sequence, NamedTuple, Any
 import equinox as eqx
 import os
-from utils.running_mean_std import normalize_obs
+from rl_utils.running_mean_std import normalize_obs
 
 
 

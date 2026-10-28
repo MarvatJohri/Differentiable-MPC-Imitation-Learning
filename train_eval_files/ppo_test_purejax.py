@@ -14,20 +14,31 @@ import os
 import sys
 from pathlib import Path
 
-from ppo_train_purejax import init_obs_rms, init_ret_rms, load_model_state, normalize_obs
+from ppo_train_purejax import load_model_state
+
+from rl_utils.running_mean_std import RunningMeanStd, init_obs_rms, init_ret_rms, update_rms, normalize_obs
+
+from matplotlib import pyplot as plt
+
 
 HERE = Path(__file__).parent
 MJ_WORK = HERE.parent
 sys.path.append(str(MJ_WORK))
 
-import equinox as eqx
-from simulation_env_jax import SpacecraftEnvJax, n_rollouts_policy
-from configs import ExpConfig, SpacecraftEnvConfig, PPOHyperparameters
-from mj_utils import make_dummy_controller, compute_metrics, print_metrics
+from configs import ExpConfig, SpacecraftEnvConfig, PPOHyperparameters, get_env
+from mj_utils import compute_metrics, print_metrics
+
+from rl_utils.generate_trajs import n_rollouts_policy
+from rl_utils.plotting_and_evaluate import (
+    extract_trajectory_data,
+    plot_rewards,
+    plot_control_trajectories,
+    plot_cost_weights,
+)
 
 
 
-from ppo_model import ActorCritic, save_ppo_network, load_ppo_network
+from ppo_model import ActorCritic
 
 
 def get_policy(model: ActorCritic, obs_rms):
@@ -79,22 +90,6 @@ def main():
     GOAL_REWARD = env_config.goal_reward
     THETA_STABILITY_TOL = env_config.theta_stability_tol
     OMEGA_STABILITY_TOL = env_config.omega_stability_tol
-
-    # Make env
-    env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMETERS,
-                            dt=DT,
-                            max_ep_steps=MAX_EP_STEPS,
-                            state_limits=STATE_LIMITS,
-                            control_limits=CONTROL_LIMITS,
-                            max_torque=MAX_TORQUE,
-                            dyn_noise_std=DYN_NOISE_STD,
-                            theta_threshold=THETA_THRESHOLD,
-                            omega_threshold=OMEGA_THRESHOLD,
-                            theta_threshold_reward=THETA_THRESHOLD_REWARD,
-                            omega_penalty=OMEGA_PENALTY,
-                            omega_fail_penalty=OMEGA_FAIL_PENALTY,
-                            action_penalty=ACTION_PENALTY,
-                            goal_reward=GOAL_REWARD)
 
 
     config = {
@@ -154,20 +149,25 @@ def main():
     ppo_policy = get_policy(model, obs_rms)
 
     # Load env
-    env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMETERS,
-                            dt=DT,
-                            max_ep_steps=MAX_EP_STEPS,
-                            state_limits=STATE_LIMITS,
-                            control_limits=CONTROL_LIMITS,
-                            max_torque=MAX_TORQUE,
-                            dyn_noise_std=DYN_NOISE_STD,
-                            theta_threshold=THETA_THRESHOLD,
-                            omega_threshold=OMEGA_THRESHOLD,
-                            theta_threshold_reward=THETA_THRESHOLD_REWARD,
-                            omega_penalty=OMEGA_PENALTY,
-                            omega_fail_penalty=OMEGA_FAIL_PENALTY,
-                            action_penalty=ACTION_PENALTY,
-                            goal_reward=GOAL_REWARD)
+    # env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMETERS,
+    #                         dt=DT,
+    #                         max_ep_steps=MAX_EP_STEPS,
+    #                         state_limits=STATE_LIMITS,
+    #                         control_limits=CONTROL_LIMITS,
+    #                         max_torque=MAX_TORQUE,
+    #                         dyn_noise_std=DYN_NOISE_STD,
+    #                         theta_threshold=THETA_THRESHOLD,
+    #                         omega_threshold=OMEGA_THRESHOLD,
+    #                         theta_threshold_reward=THETA_THRESHOLD_REWARD,
+    #                         omega_penalty=OMEGA_PENALTY,
+    #                         omega_fail_penalty=OMEGA_FAIL_PENALTY,
+    #                         action_penalty=ACTION_PENALTY,
+    #                         goal_reward=GOAL_REWARD)
+
+    env = get_env(env_name="spacecraft_env_noisy")
+
+
+    
 
     # Generate trajectories using the loaded model
     trajectories, keys = n_rollouts_policy(env=env, 
@@ -178,6 +178,24 @@ def main():
 
     metrics = compute_metrics(trajectories)
     print_metrics(metrics)
+
+
+    runs = {
+        "ACMPC": extract_trajectory_data(
+            trajectories,
+            dt=DT,
+            max_torque=MAX_TORQUE,
+            action_low=CONTROL_LIMITS[:, 0],
+            action_high=CONTROL_LIMITS[:, 1],
+            action_units="torque",
+        )
+    }
+    figure_dir = Path(LOG_PATH) / "figures"
+    plot_rewards(runs, save_path=figure_dir / "rewards.png")
+    plot_control_trajectories(
+        runs, episode=0, save_path=figure_dir / "controls_episode_0.png",
+    )
+    plt.show()
 
 
 

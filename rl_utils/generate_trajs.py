@@ -147,14 +147,30 @@ def generate_n_dagger_trajectories(env: SpacecraftEnvJax,
 
     key, subkey = jax.random.split(key)
     batched_keys = jax.random.split(subkey, n_trajectories)
-    trajectories, _ = jax.vmap(generate_dagger_trajectory, in_axes=(None, None, None, 0, None, None, None))(env, 
-                                                                                                     controller, 
-                                                                                                     expert_policy, 
-                                                                                                     batched_keys, 
-                                                                                                     beta, 
-                                                                                                     max_ep_steps, 
-                                                                                                     replan_freq)
+    # trajectories, _ = jax.vmap(generate_dagger_trajectory, in_axes=(None, None, None, 0, None, None, None))(env, 
+    #                                                                                                  controller, 
+    #                                                                                                  expert_policy, 
+    #                                                                                                  batched_keys, 
+    #                                                                                                  beta, 
+    #                                                                                                  max_ep_steps, 
+    #                                                                                                  replan_freq)
     
+    trajectories, _ = jax.vmap(lambda rollout_key: 
+                               generate_dagger_trajectory(
+                               env=env,
+                               controller=controller,
+                               expert_policy=expert_policy,
+                               key=rollout_key,
+                               beta=beta,
+                               max_ep_steps=max_ep_steps,
+                               replan_freq=replan_freq,
+                               horizon=controller.mpc_horizon,
+                               nx=controller.nx,
+                               nu=controller.nu,
+                               )
+                            )(batched_keys)
+
+
     return trajectories, key
 
 

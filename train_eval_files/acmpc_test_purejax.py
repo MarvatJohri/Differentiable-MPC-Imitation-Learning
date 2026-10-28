@@ -21,8 +21,8 @@ sys.path.append(str(MJ_WORK))
 import equinox as eqx
 import matplotlib.pyplot as plt
 from simulation_env_jax import SpacecraftEnvJax
-from utils.generate_trajs import n_rollouts_controller
-from utils.plotting_and_evaluate import (
+from rl_utils.generate_trajs import n_rollouts_controller
+from rl_utils.plotting_and_evaluate import (
     extract_trajectory_data,
     plot_rewards,
     plot_control_trajectories,

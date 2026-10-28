@@ -18,7 +18,7 @@ ROOT = MJ_WORK.parent
 URANUS_MPC_PATH = ROOT / "uranus-mpc"
 
 
-sys.path.append(str(URANUS_MPC_PATH))
+sys.path.insert(0, str(URANUS_MPC_PATH))
 sys.path.append(str(MJ_WORK))
 
 

@@ -26,7 +26,7 @@ sys.path.append(str(MJ_WORK))
 import equinox as eqx
 from simulation_env_jax import SpacecraftEnvJax
 from configs import ExpConfig, SpacecraftEnvConfig, PPOHyperparameters
-from utils.running_mean_std import RunningMeanStd, init_obs_rms, init_ret_rms, update_rms, normalize_obs
+from rl_utils.running_mean_std import RunningMeanStd, init_obs_rms, init_ret_rms, update_rms, normalize_obs
 
 from time import time
 
@@ -821,6 +821,8 @@ if __name__ == "__main__":
         "ACTOR_LEARNING_RATE_SCHEDULE": hyperparams.actor_learning_rate_schedule,
         "CRITIC_LEARNING_RATE_SCHEDULE": hyperparams.critic_learning_rate_schedule,
         "LEARNING_RATE_FINAL": hyperparams.learning_rate_final,
+        "ACTOR_LEARNING_RATE_FINAL": hyperparams.actor_learning_rate_final,
+        "CRITIC_LEARNING_RATE_FINAL": hyperparams.critic_learning_rate_final,
         "NUM_ENVS": hyperparams.n_envs,
         "NUM_STEPS": hyperparams.n_steps,
         "TOTAL_TIMESTEPS": hyperparams.total_timesteps,
