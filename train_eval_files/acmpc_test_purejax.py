@@ -29,7 +29,7 @@ from rl_utils.plotting_and_evaluate import (
     plot_cost_weights,
 )
 # from simulation_env_jax_test1 import SpacecraftEnvJax
-from configs import ExpConfig, SpacecraftEnvConfig, ACMPCHyperparameters
+from configs import ExpConfig, SpacecraftEnvConfig, ACMPCHyperparameters, get_env
 from mj_utils import compute_metrics, print_metrics
 
 from acmpc_model import ActorCriticMPC, load_acmpc_network, get_acmpc_controller
@@ -79,20 +79,7 @@ def main():
     OMEGA_STABILITY_TOL = env_config.omega_stability_tol
 
     # Make env
-    env = SpacecraftEnvJax(dynamics_params=DYNAMICS_PARAMETERS,
-                            dt=DT,
-                            max_ep_steps=MAX_EP_STEPS,
-                            state_limits=STATE_LIMITS,
-                            control_limits=CONTROL_LIMITS,
-                            max_torque=MAX_TORQUE,
-                            dyn_noise_std=DYN_NOISE_STD,
-                            theta_threshold=THETA_THRESHOLD,
-                            omega_threshold=OMEGA_THRESHOLD,
-                            theta_threshold_reward=THETA_THRESHOLD_REWARD,
-                            omega_penalty=OMEGA_PENALTY,
-                            omega_fail_penalty=OMEGA_FAIL_PENALTY,
-                            action_penalty=ACTION_PENALTY,
-                            goal_reward=GOAL_REWARD)
+    env = get_env(env_name="spacecraft_env")
 
 
 

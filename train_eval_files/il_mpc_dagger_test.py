@@ -34,7 +34,7 @@ hyperparameters = DaggerHyperparameters()
 controller_config = ControllerConfig()
 
 # Switch to "spacecraft_env" to evaluate the original torque environment.
-ENV_NAME = "spacecraft_env"
+ENV_NAME = "spacecraft_env_noisy"
 N_ROLLOUTS = exp_config.num_eval_eps
 SEED = exp_config.seed
 

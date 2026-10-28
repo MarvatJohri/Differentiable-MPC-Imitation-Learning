@@ -49,8 +49,8 @@ class EnvState(NamedTuple):
 class SpacecraftEnvJax(eqx.Module):
 
     # Static params
-    inertia: Float[Array, "3 3"] = eqx.field(static=True)
-    inertia_inv: Float[Array, "3 3"] = eqx.field(static=True)
+    inertia: Float[Array, "3 3"]
+    inertia_inv: Float[Array, "3 3"]
     mass: float = eqx.field(static=True)  
 
     # Env params
@@ -69,10 +69,10 @@ class SpacecraftEnvJax(eqx.Module):
     theta_threshold_reward: float = eqx.field(static=True)
 
     # Limits
-    state_limits: Float[Array, "7 2"] = eqx.field(static=True)
-    control_limits: Float[Array, "3 2"] = eqx.field(static=True)
-    max_omega_norm: float = eqx.field(static=True)
-    max_action_norm: float = eqx.field(static=True)
+    state_limits: Float[Array, "7 2"]
+    control_limits: Float[Array, "3 2"]
+    max_omega_norm: Float[Array, ""]
+    max_action_norm: Float[Array, ""]
 
     
 

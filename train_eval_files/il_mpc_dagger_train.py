@@ -550,7 +550,7 @@ def learn(env: SpacecraftEnvJax,
 
         # Evaluation advances the carried RNG key. Save afterward so resumed
         # training uses the same next key as uninterrupted training.
-        if evaluate_freq > 0 and (itr + 1) % evaluate_freq == 0:
+        if evaluate_freq > 0 and (itr) % evaluate_freq == 0:
             key, subkey = jax.random.split(key)
             eval_metrics = evaluate(controller, max_ep_steps, num_eval_eps, subkey)
             logger.info(

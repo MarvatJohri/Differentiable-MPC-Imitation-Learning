@@ -67,7 +67,7 @@ class ExpConfig:
     ppo_experiment_name: str = "spacecraft_ppo_purejax_separate_optimizers"
     ppo_experiment_notes: str = "Initial PPO training on Earth orbit"
 
-    acmpc_experiment_name: str = "spacecraft_acmpc_purejax"
+    acmpc_experiment_name: str = "spacecraft_acmpc_purejax_exp1"
     acmpc_experiment_notes: str = "Initial AC-MPC training on Earth orbit"
 
     dagger_experiment_name: str = "spacecraft_ppo_dagger_exp1"
