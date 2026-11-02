@@ -35,11 +35,11 @@ import optax
 # from mj_work.simulation_env_numpy import SpacecraftEnv
 from replay_buffer import ReplayBuffer, init_buffer, add_trajectories_to_buffer, sample_from_buffer
 from mj_utils import make_dummy_controller, make_dummy_expert, compute_metrics, plot_metrics_bar, print_metrics, plot_metrics_comparison, load_controller, save_controller
-from diffmpc_controller import DiffMPCController, FeedForwardNetwork
+from mj_work.models.diffmpc_controller import DiffMPCController, FeedForwardNetwork
 from simulation_env_jax import SpacecraftEnvJax
 from rl_utils.generate_trajs import generate_n_dagger_trajectories, n_rollouts_controller
 from configs import ExpConfig, SpacecraftEnvConfig, DaggerHyperparameters, PPOHyperparameters
-from ppo_model import ActorCritic, get_policy
+from mj_work.models.ppo_model import ActorCritic, get_policy
 from ppo_train_purejax import load_model_state
 
 exp_config = ExpConfig()

@@ -38,7 +38,7 @@ from rl_utils.plotting_and_evaluate import (
 
 
 
-from ppo_model import ActorCritic
+from models.ppo_model import ActorCritic
 
 
 def get_policy(model: ActorCritic, obs_rms):
@@ -165,6 +165,7 @@ def main():
     #                         goal_reward=GOAL_REWARD)
 
     env = get_env(env_name="spacecraft_env_noisy")
+    print(env.dyn_noise_std)
 
 
     

@@ -18,7 +18,7 @@ ROOT = MJ_WORK.parent
 URANUS_MPC_PATH = ROOT / "uranus-mpc"
 
 
-sys.path.append(str(URANUS_MPC_PATH))
+sys.path.insert(0, str(URANUS_MPC_PATH))
 sys.path.append(str(MJ_WORK))
 
 
@@ -71,7 +71,6 @@ class EnvState(NamedTuple):
     state: jnp.ndarray
     goal_state: jnp.ndarray
     orbit_traj: jnp.ndarray
-    orbit_xyz: jnp.ndarray
     b_traj: jnp.ndarray
     step_count: int
     step_key: jax.random.PRNGKey
@@ -80,17 +79,17 @@ class EnvState(NamedTuple):
 
 
 
-class SpacecraftEnvNoisy(eqx.Module):
+class SpacecraftEnvMagnetorquer(eqx.Module):
 
     # Static params
-    inertia: Float[Array, "3 3"] = eqx.field(static=True)
-    inertia_inv: Float[Array, "3 3"] = eqx.field(static=True)
+    inertia: Float[Array, "3 3"] 
+    inertia_inv: Float[Array, "3 3"] 
     mass: float = eqx.field(static=True)  
 
     # Env params
     dt: float = eqx.field(static=True)
     max_ep_steps: int = eqx.field(static=True)
-    max_torque: float = eqx.field(static=True)
+    max_dipole_moment: float = eqx.field(static=True)
     dyn_noise_std: float = eqx.field(static=True)
 
     # Reward params
@@ -103,8 +102,8 @@ class SpacecraftEnvNoisy(eqx.Module):
     theta_threshold_reward: float = eqx.field(static=True)
 
     # Limits
-    state_limits: Float[Array, "7 2"] = eqx.field(static=True)
-    control_limits: Float[Array, "3 2"] = eqx.field(static=True)
+    state_limits: Float[Array, "7 2"] 
+    control_limits: Float[Array, "3 2"] 
     max_omega_norm: float = eqx.field(static=True)
     max_action_norm: float = eqx.field(static=True)
 
@@ -127,7 +126,7 @@ class SpacecraftEnvNoisy(eqx.Module):
                  max_ep_steps: Optional[int] = 1500,
                  state_limits: Optional[jnp.ndarray] = None,
                  control_limits: Optional[jnp.ndarray] = None,
-                 max_torque: Optional[float] = 5e-5,
+                 max_dipole_moment: Optional[float] = 0.8,
                  dyn_noise_std: Optional[float] = 1e-6,
                  theta_threshold: Optional[float] = 0.5,
                  omega_threshold: Optional[float] = 0.1,
@@ -152,7 +151,7 @@ class SpacecraftEnvNoisy(eqx.Module):
 
         self.dt = dt
         self.max_ep_steps = max_ep_steps
-        self.max_torque = max_torque
+        self.max_dipole_moment = max_dipole_moment
         self.dyn_noise_std = dyn_noise_std
 
         self.theta_threshold = theta_threshold
@@ -191,7 +190,7 @@ class SpacecraftEnvNoisy(eqx.Module):
 
         # Make a check to ensure N_orbit has enough steps for horizon + num_steps
         if self.N_orbit < self.mag_field_horizon + self.max_ep_steps:
-            raise ValueError(f"N_orbit ({self.N_orbit}) must be greater than or equal to episode length ({self.num_steps}) + mag_field_horizon ({self.mag_field_horizon}) = {self.mag_field_horizon + self.num_steps}.")
+            raise ValueError(f"N_orbit ({self.N_orbit}) must be greater than or equal to episode length ({self.max_ep_steps}) + mag_field_horizon ({self.mag_field_horizon}) = {self.mag_field_horizon + self.max_ep_steps}.")
 
 
 
@@ -331,7 +330,6 @@ class SpacecraftEnvNoisy(eqx.Module):
             "orbit_elements": orbit_states,
             "orbit_initial_state": orbit_initial_state,
             "orbit_traj": orbit_traj,
-            "orbit_xyz": orbit_traj[:, :, :3],
             "b_traj": b_traj,
             "initial_state": initial_state,
             "goal_state": target_state,
@@ -377,10 +375,7 @@ class SpacecraftEnvNoisy(eqx.Module):
         initial_state = context["initial_state"]
         target_state = context["goal_state"]
         orbit_traj = context["orbit_traj"]
-        orbit_xyz = context["orbit_xyz"]
         b_traj = context["b_traj"]
-        orbit_elements = context["orbit_elements"]
-        orbit_initial_state = context["orbit_initial_state"]
         
         step_key = key
         step_count = 0
@@ -399,7 +394,6 @@ class SpacecraftEnvNoisy(eqx.Module):
                                   step_key=step_key,
                                   prev_angle_error=angle_error,
                                   orbit_traj=orbit_traj,
-                                  orbit_xyz=orbit_xyz,
                                   b_traj=b_traj,
                                   )  
 
@@ -501,10 +495,17 @@ class SpacecraftEnvNoisy(eqx.Module):
         q = state[:4]
         w = state[4:7]
 
-        disturbance_deterministic = self.disturbance_deterministic(t, env_state, state)
-        disturbance_stochastic = self.disturbance_stochastic(key, env_state)
+        # disturbance_deterministic = self.disturbance_deterministic(t, env_state, state)
+        # disturbance_stochastic = self.disturbance_stochastic(key, env_state)
 
-        tau = control + u_noise + disturbance_deterministic + disturbance_stochastic
+        # tau = control + u_noise + disturbance_deterministic + disturbance_stochastic
+        step = env_state.step_count
+        b_pci = env_state.b_traj[step]
+        b_body = get_rotation(q_conj(q)) @ b_pci
+        torque_control = jnp.cross(control[0:3], b_body)*1e-9
+
+
+        tau = torque_control + u_noise
 
         q_dot = 0.5 * q_left(q) @ jnp.concatenate((jnp.array([0.0]), w)) # equivalent of q_mul(quat_conj(q), other_stuff)
         w_dot = self.inertia_inv @ (tau - skew(w) @ self.inertia @ w) # cross product a x b = a_skew_symmetric @ b
@@ -665,7 +666,7 @@ class SpacecraftEnvNoisy(eqx.Module):
         action = jnp.clip(action, self.control_limits[:, 0], self.control_limits[:, 1])
 
         # Convert action to torque
-        torque = action * self.max_torque
+        dipole = action * self.max_dipole_moment
 
         # Unpack env state
         state = env_state.state
@@ -677,7 +678,7 @@ class SpacecraftEnvNoisy(eqx.Module):
 
         new_state = self.rk4_step(env_state.step_count*self.dt, 
                                   env_state, 
-                                  torque, 
+                                  dipole, 
                                   noise_key)
 
         # Handle wrap around for quaternion 

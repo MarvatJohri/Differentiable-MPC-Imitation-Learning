@@ -34,7 +34,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 # from mj_work.simulation_env_numpy import SpacecraftEnv
 from replay_buffer import ReplayBuffer, init_buffer, add_trajectories_to_buffer, sample_from_buffer
 from mj_utils import make_dummy_controller, make_dummy_expert, compute_metrics, plot_metrics_bar, print_metrics, plot_metrics_comparison, load_controller, save_controller
-from diffmpc_controller import DiffMPCController, FeedForwardNetwork
+from mj_work.models.diffmpc_controller import DiffMPCController, FeedForwardNetwork
 from simulation_env_jax import SpacecraftEnvJax, generate_trajectory, generate_n_trajectories
 from configs import ExpConfig, SpacecraftEnvConfig, DaggerHyperparameters
 

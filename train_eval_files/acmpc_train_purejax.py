@@ -46,7 +46,7 @@ from rl_utils.running_mean_std import RunningMeanStd, init_ret_rms, update_rms
 from time import time
 
 
-from acmpc_model import ActorCriticMPC, save_acmpc_network, load_acmpc_network
+from models.acmpc_model import ActorCriticMPC, save_acmpc_network, load_acmpc_network
 
  
  
@@ -313,6 +313,40 @@ def make_train(config, env: SpacecraftEnvJax):
             unroll=16
         )
         return advantages, advantages + traj.value
+
+    def check_policy_replay(model: ActorCriticMPC, traj: Transition):
+        # Recompute the unchanged behavior policy using PPO-sized MPC batches.
+        # Process batches sequentially to avoid one rollout-sized solver batch.
+        batches = jax.tree.map(
+            lambda x: x.reshape(
+                (num_minibatches, minibatch_size) + x.shape[2:]
+            ),
+            traj,
+        )
+
+        def check_batch(batch):
+            mean, _, _ = jax.vmap(model.mean)(
+                batch.obs, batch.x_goal, batch.x_nominal, batch.u_nominal,
+            )
+            mean = mean / env.max_torque
+            log_prob = gaussian_log_prob(mean, model.log_std, batch.action)
+            difference = log_prob - batch.log_prob
+            return (
+                jnp.mean(jnp.abs(difference)),
+                jnp.max(jnp.abs(difference)),
+                jnp.max(jnp.abs(jnp.expm1(difference))),
+            )
+
+        mean_errors, max_errors, ratio_errors = jax.lax.map(
+            check_batch, batches,
+        )
+        jax.debug.print(
+            "PRE-UPDATE: mean |delta logp|={mean:.3e}, "
+            "max |delta logp|={maximum:.3e}, max |ratio-1|={ratio:.3e}",
+            mean=mean_errors.mean(),
+            maximum=max_errors.max(),
+            ratio=ratio_errors.max(),
+        )
 
     def loss_fn(model: ActorCriticMPC, batch: Transition, gae, targets):
         mean, _, __ = jax.vmap(model.mean)(batch.obs, batch.x_goal, batch.x_nominal, batch.u_nominal)
@@ -691,7 +725,8 @@ def make_train(config, env: SpacecraftEnvJax):
             #     _env_step, (env_state, obs, ep_return, disc_return, obs_rms, ret_rms, key), None, length=config["NUM_STEPS"]
             # )
 
-            init_nominal_traj, init_nominal_cntrl = init_nominal_trajectories(env_state.state, key)
+            key, subkey = jax.random.split(key)
+            init_nominal_traj, init_nominal_cntrl = init_nominal_trajectories(env_state.state, subkey)
             carry_init = (env_state, obs, ep_return, discounted_return, init_nominal_traj, init_nominal_cntrl, ret_rms, key, 0)
             final_carry, trajectories = jax.lax.scan(
                 _env_step, carry_init, 
@@ -699,9 +734,21 @@ def make_train(config, env: SpacecraftEnvJax):
             )
 
 
-
             env_state_final, obs, ep_return, discounted_return, nominal_traj, nominal_cntrl, ret_rms, key, step_idx = final_carry
             traj, finished_return = trajectories
+
+            # Check the first rollout before any optimizer updates. No RNG is
+            # consumed and the stored actions/log probabilities are unchanged.
+            def check_first_rollout(_):
+                check_policy_replay(controller, traj)
+                return jnp.array(0)
+
+            jax.lax.cond(
+                update_idx == 0,
+                check_first_rollout,
+                lambda _: jnp.array(0),
+                operand=None,
+            )
 
 
             # CALCULATE ADVANTAGE

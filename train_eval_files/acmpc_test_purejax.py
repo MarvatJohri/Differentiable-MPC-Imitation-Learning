@@ -32,7 +32,7 @@ from rl_utils.plotting_and_evaluate import (
 from configs import ExpConfig, SpacecraftEnvConfig, ACMPCHyperparameters, get_env
 from mj_utils import compute_metrics, print_metrics
 
-from acmpc_model import ActorCriticMPC, load_acmpc_network, get_acmpc_controller
+from models.acmpc_model import ActorCriticMPC, load_acmpc_network, get_acmpc_controller
 
 
 

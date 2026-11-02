@@ -9,7 +9,7 @@ from configs import (
     ExpConfig, SpacecraftEnvConfig, DaggerHyperparameters, ControllerConfig,
     get_env,
 )
-from diffmpc_controller import DiffMPCController, FeedForwardNetwork
+from mj_work.models.diffmpc_controller import DiffMPCController, FeedForwardNetwork
 from mj_utils import load_controller, compute_metrics, print_metrics
 from rl_utils.generate_trajs import n_rollouts_controller
 

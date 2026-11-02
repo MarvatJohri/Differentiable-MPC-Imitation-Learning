@@ -403,34 +403,11 @@ class SpacecraftEnvNoisy(eqx.Module):
         return init_env_state, init_obs, info
 
 
-    def _orbit_position_interpolation(self, t, env_state: EnvState):
-
-        # t -> time elapsed since episode's orbit began
-        # in between k,k+1 time step since its used within rk4 integration
+    def gravity_gradient_torque(self, t: float, env_state: EnvState, state: jnp.ndarray) -> jnp.ndarray:
 
         i = env_state.step_count
         orbit = env_state.orbit_traj[0]
-
-        r0 = orbit[i, 0:3]
-        r1 = orbit[i + 1, 0:3]
-        v0 = orbit[i, 3:6]
-        v1 = orbit[i + 1, 3:6]
-
-        # Hermite interpolation for position and velocity
-        s = (t - i * self.dt) / self.dt  # normalized time between 0 and 1
-        h00 = 2 * s**3 - 3 * s**2 + 1
-        h10 = s**3 - 2 * s**2 + s
-        h01 = -2 * s**3 + 3 * s**2
-        h11 = s**3 - s**2
-
-        r_interp = h00 * r0 + h10 * self.dt * v0 + h01 * r1 + h11 * self.dt * v1
-
-        return r_interp
-
-
-    def gravity_gradient_torque(self, t: float, env_state: EnvState, state: jnp.ndarray) -> jnp.ndarray:
-
-        r_pci = self._orbit_position_interpolation(t, env_state)
+        r_pci = orbit[i, 0:3]
         radius = jnp.linalg.norm(r_pci)
 
         q = state[:4]

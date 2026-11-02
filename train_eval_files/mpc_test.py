@@ -20,12 +20,12 @@ sys.path.append(str(MJ_WORK))
 
 import equinox as eqx
 from simulation_env_jax import SpacecraftEnvJax
-from utils.generate_trajs import n_rollouts_controller
+from rl_utils.generate_trajs import n_rollouts_controller
 # from simulation_env_jax_test1 import SpacecraftEnvJax
 from configs import ExpConfig, SpacecraftEnvConfig, MPCParameters
 from mj_utils import compute_metrics, print_metrics
 
-from mpc_model import MPCController
+from mj_work.models.mpc_model import MPCController
 
 
 

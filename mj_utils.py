@@ -21,7 +21,7 @@ from pathlib import Path
 from sbx import PPO
 from stable_baselines3.common.vec_env import VecNormalize
 
-from diffmpc_controller import DiffMPCController
+from mj_work.models.diffmpc_controller import DiffMPCController
 
 MAX_TORQUE = 5e-5
 

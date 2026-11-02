@@ -26,7 +26,7 @@ jax.devices()
 
 
 from quaternion_functions import q_left, q_conj, q_mul, skew, quaternion_projection
-from diffmpc_controller import DiffMPCController
+from models.diffmpc_controller import DiffMPCController
 
 
 DYNAMICS_PARAMS = {

@@ -31,7 +31,7 @@ from rl_utils.running_mean_std import RunningMeanStd, init_obs_rms, init_ret_rms
 from time import time
 
 
-from ppo_model import ActorCritic, save_ppo_network, load_ppo_network
+from models.ppo_model import ActorCritic, save_ppo_network, load_ppo_network
 
  
  
