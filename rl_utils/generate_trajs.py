@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from typing import Callable, Dict, Any, NamedTuple
 import equinox as eqx
 from simulation_env_jax import SpacecraftEnvJax
-from mj_work.models.diffmpc_controller import DiffMPCController, network_output_to_QR
+from models.diffmpc_controller import DiffMPCController, network_output_to_QR
 
 
 

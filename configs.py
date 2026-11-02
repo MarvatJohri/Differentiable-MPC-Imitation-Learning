@@ -403,10 +403,10 @@ class ACMPCHyperparameters:
     net_arch: list = field(default_factory=lambda: NET_ARCH)
     learning_rate: float = 1e-3
     actor_learning_rate: float = 3e-4
-    critic_learning_rate: float = 1e-3
+    critic_learning_rate: float = 3e-4
     learning_rate_schedule: str = 'constant'
-    actor_learning_rate_schedule: str = 'constant'
-    critic_learning_rate_schedule: str = 'constant'
+    actor_learning_rate_schedule: str = 'cosine'
+    critic_learning_rate_schedule: str = 'cosine'
     learning_rate_final: float = 1e-5
     actor_learning_rate_final: float = 1e-5
     critic_learning_rate_final: float = 1e-5
@@ -419,7 +419,7 @@ class ACMPCHyperparameters:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_range: float = 0.2
-    ent_coef: float = 1e-2
+    ent_coef: float = 1e-5
     log_std_init: float = -2.0
     vf_coef: float = 0.5
     clip_val_loss: bool = False
